@@ -106,9 +106,9 @@ func (a *App) Close() error {
 	return errors.Join(errs...)
 }
 
-// Apply puts a new configuration in force: hotkeys, autostart entry, file. When
-// a step fails the earlier ones are undone, so that what is running always
-// matches what the settings window shows.
+// Apply puts a new configuration in force: hotkeys, autostart entry, file,
+// layout switching. When a step fails the earlier ones are undone, so that what
+// is running always matches what the settings window shows.
 func (a *App) Apply(cfg config.Config) error {
 	if err := a.bindHotkeys(cfg); err != nil {
 		a.restoreHotkeys()
@@ -128,8 +128,10 @@ func (a *App) Apply(cfg config.Config) error {
 		return err
 	}
 
+	a.switcher.SetSwitchLayout(cfg.SwitchLayout)
 	a.config = cfg
-	a.log.Info("settings applied", "hotkey", cfg.Hotkey.Key, "autostart", cfg.Autostart)
+	a.log.Info("settings applied", "hotkey", cfg.Hotkey.Key, "autostart", cfg.Autostart,
+		"switch_layout", cfg.SwitchLayout)
 	return nil
 }
 
@@ -195,7 +197,11 @@ func (a *App) buildSwitcher() error {
 		Terminal:  terminal{},
 	}
 	a.switcher, err = switcher.New(installed, deps, switcher.DefaultOptions(), a.log)
-	return err
+	if err != nil {
+		return err
+	}
+	a.switcher.SetSwitchLayout(a.config.SwitchLayout)
+	return nil
 }
 
 // terminal hands the switcher the console behind the focused window. It is a

@@ -28,6 +28,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	want := Config{
 		Hotkey:    Hotkey{Key: "F9", Modifiers: []string{"Ctrl"}},
 		Autostart: true,
+		// Off, unlike the default, so that the file is proven to carry it.
+		SwitchLayout: false,
 	}
 	if err := SaveTo(path, want); err != nil {
 		t.Fatalf("SaveTo: %v", err)
@@ -38,6 +40,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("LoadFrom: %v", err)
 	}
 	if got.Hotkey.Key != want.Hotkey.Key || got.Autostart != want.Autostart ||
+		got.SwitchLayout != want.SwitchLayout ||
 		len(got.Hotkey.Modifiers) != 1 || got.Hotkey.Modifiers[0] != "Ctrl" {
 		t.Errorf("round trip gave %+v, want %+v", got, want)
 	}
@@ -48,7 +51,7 @@ func TestLoadFromMissingFileGivesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing configuration file must not be an error, got %v", err)
 	}
-	if got.Hotkey.Key != Default().Hotkey.Key || got.Autostart {
+	if got.Hotkey.Key != Default().Hotkey.Key || got.Autostart || !got.SwitchLayout {
 		t.Errorf("LoadFrom(missing) = %+v, want the defaults", got)
 	}
 }

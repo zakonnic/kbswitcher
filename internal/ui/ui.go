@@ -102,6 +102,10 @@ func hotkeySummary(cfg config.Config) string {
 	if err != nil {
 		return "The hotkey is not configured."
 	}
-	return combo.String() + " converts the last word.\n" +
+	word := " converts the last word."
+	if cfg.SwitchLayout {
+		word = " converts the last word and switches the keyboard layout."
+	}
+	return combo.String() + word + "\n" +
 		combo.With(hotkey.ModShift).String() + " converts the selected text."
 }

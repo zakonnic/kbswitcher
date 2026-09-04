@@ -15,6 +15,7 @@ ckjdj   →  слово
 
 - **Break** (**F12** on a Mac) rewrites the word before the caret and switches
   the keyboard to the layout that word now belongs to, so you can keep typing.
+  The switch can be turned off in Settings.
 - **Shift+Break** (**Shift+F12** on a Mac) rewrites the selected text and leaves
   the keyboard layout alone.
 
@@ -84,10 +85,11 @@ Right-click the tray icon:
 
 - **About** — version, the layouts that were found and the order they are cycled
   in, and a button that checks for a newer release and installs it.
-- **Settings** — two options: whether kbswitcher starts with your session, and
-  which key (with optional Ctrl, Alt or Cmd/Win) triggers it. Shift is reserved:
-  it is what turns the hotkey into its "convert the selection" form. Save puts
-  the settings in force at once; Cancel discards the changes.
+- **Settings** — three options: whether kbswitcher starts with your session,
+  which key (with optional Ctrl, Alt or Cmd/Win) triggers it, and whether
+  converting a word also switches the keyboard layout. Shift is reserved: it is
+  what turns the hotkey into its "convert the selection" form. Save puts the
+  settings in force at once; Cancel discards the changes.
 - **Quit**.
 
 Only one copy runs at a time: starting kbswitcher while it is already running

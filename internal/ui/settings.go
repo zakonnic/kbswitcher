@@ -53,6 +53,7 @@ func (a *App) showSettings() {
 		widget.NewForm(
 			widget.NewFormItem("Autostart", form.autostart),
 			widget.NewFormItem("Hotkey", container.NewVBox(form.key, form.modifiers)),
+			widget.NewFormItem("Layout", form.switchLayout),
 		),
 		widget.NewSeparator(),
 		form.summary,
@@ -65,19 +66,21 @@ func (a *App) showSettings() {
 
 // settingsForm holds the widgets of the settings window.
 type settingsForm struct {
-	autostart *widget.Check
-	key       *widget.Select
-	modifiers *fyne.Container
-	checks    []*widget.Check // one per hotkey.Modifiers(), in that order
-	summary   *widget.Label
+	autostart    *widget.Check
+	key          *widget.Select
+	modifiers    *fyne.Container
+	checks       []*widget.Check // one per hotkey.Modifiers(), in that order
+	switchLayout *widget.Check
+	summary      *widget.Label
 }
 
 func newSettingsForm(cfg config.Config) *settingsForm {
 	f := &settingsForm{
-		autostart: widget.NewCheck("Start when I log in", nil),
-		key:       widget.NewSelect(hotkey.Keys(), nil),
-		modifiers: container.NewHBox(),
-		summary:   widget.NewLabel(""),
+		autostart:    widget.NewCheck("Start when I log in", nil),
+		key:          widget.NewSelect(hotkey.Keys(), nil),
+		modifiers:    container.NewHBox(),
+		switchLayout: widget.NewCheck("Switch the keyboard to the layout of the converted word", nil),
+		summary:      widget.NewLabel(""),
 	}
 	f.summary.Wrapping = fyne.TextWrapWord
 	for _, name := range hotkey.Modifiers() {
@@ -86,6 +89,7 @@ func newSettingsForm(cfg config.Config) *settingsForm {
 		f.modifiers.Add(check)
 	}
 	f.key.OnChanged = func(string) { f.preview() }
+	f.switchLayout.OnChanged = func(bool) { f.preview() }
 	f.reset(cfg)
 	return f
 }
@@ -99,8 +103,9 @@ func (f *settingsForm) config() config.Config {
 		}
 	}
 	return config.Config{
-		Hotkey:    config.Hotkey{Key: f.key.Selected, Modifiers: names},
-		Autostart: f.autostart.Checked,
+		Hotkey:       config.Hotkey{Key: f.key.Selected, Modifiers: names},
+		Autostart:    f.autostart.Checked,
+		SwitchLayout: f.switchLayout.Checked,
 	}
 }
 
@@ -115,6 +120,7 @@ func (f *settingsForm) reset(cfg config.Config) {
 		check.SetChecked(slices.Contains(names, check.Text))
 	}
 	f.autostart.SetChecked(cfg.Autostart)
+	f.switchLayout.SetChecked(cfg.SwitchLayout)
 	f.key.SetSelected(cfg.Hotkey.Key)
 	f.preview()
 }

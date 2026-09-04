@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -127,23 +128,34 @@ type Switcher struct {
 	options Options
 	log     *slog.Logger
 
+	// switchLayout says whether ConvertLastWord also moves the focused window
+	// to the layout the word now belongs to. Settings can change it at any time.
+	switchLayout atomic.Bool
+
 	// busy admits one conversion at a time.
 	busy sync.Mutex
 }
 
-// New builds a switcher over the layouts read at start-up.
+// New builds a switcher over the layouts read at start-up. It switches the
+// layout after a word until SetSwitchLayout says otherwise.
 func New(layouts []*keymap.Layout, deps Deps, options Options, log *slog.Logger) (*Switcher, error) {
 	if len(layouts) < 2 {
 		return nil, ErrNotEnoughLayouts
 	}
-	return &Switcher{layouts: layouts, deps: deps, options: options, log: log}, nil
+	s := &Switcher{layouts: layouts, deps: deps, options: options, log: log}
+	s.switchLayout.Store(true)
+	return s, nil
 }
+
+// SetSwitchLayout turns the layout switch after ConvertLastWord on or off.
+func (s *Switcher) SetSwitchLayout(on bool) { s.switchLayout.Store(on) }
 
 // Layouts returns the layouts the switcher cycles through, in order.
 func (s *Switcher) Layouts() []*keymap.Layout { return s.layouts }
 
 // ConvertLastWord rewrites the word before the caret as if it had been typed in
-// the next layout, and switches the focused window to that layout.
+// the next layout and, unless that is turned off, switches the focused window
+// to that layout.
 func (s *Switcher) ConvertLastWord(ctx context.Context) error {
 	return s.convert(ctx, true)
 }
@@ -160,6 +172,20 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	}
 	defer s.busy.Unlock()
 
+	layout, err := s.rewrite(ctx, lastWordOnly)
+	if err != nil {
+		return err
+	}
+	if lastWordOnly && s.switchLayout.Load() {
+		s.activate(layout)
+	}
+	return nil
+}
+
+// rewrite replaces the text, through the console behind the focused window
+// when there is one and through the clipboard otherwise, and reports the
+// layout the text was rewritten for.
+func (s *Switcher) rewrite(ctx context.Context, lastWordOnly bool) (*keymap.Layout, error) {
 	if console := s.console(); console != nil {
 		defer func() {
 			if err := console.Close(); err != nil {
@@ -169,6 +195,14 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 		return s.convertInConsole(console, lastWordOnly)
 	}
 	return s.convertByClipboard(ctx, lastWordOnly)
+}
+
+// activate switches the focused window to a layout. The text is already fixed,
+// so a failure is worth a log line and no more.
+func (s *Switcher) activate(layout *keymap.Layout) {
+	if err := s.deps.Layouts.Activate(layout.ID()); err != nil {
+		s.log.Warn("could not switch the keyboard layout", "layout", layout.ID(), "error", err)
+	}
 }
 
 // active is the index of the layout the focused window uses, or the first one.
@@ -198,10 +232,10 @@ func (s *Switcher) console() Console {
 // convertInConsole rewrites the shell's input line in place. How much the
 // shell agrees to erase is what bounds the conversion: a prompt refuses, so a
 // hotkey pressed on an empty line changes nothing.
-func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) error {
+func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) (*keymap.Layout, error) {
 	line, err := console.Line()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Without a word to isolate, everything the shell lets go of is converted,
@@ -212,15 +246,15 @@ func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) error {
 		typed = word + tail
 	}
 	if typed == "" {
-		return ErrNothingToConvert
+		return nil, ErrNothingToConvert
 	}
 
 	erased, err := console.Delete(utf8.RuneCountInString(typed))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if erased == 0 {
-		return ErrNothingToConvert
+		return nil, ErrNothingToConvert
 	}
 
 	word := lastRunes(typed, erased)
@@ -234,16 +268,9 @@ func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) error {
 		if undo := console.Type(word); undo != nil {
 			s.log.Error("the erased text could not be put back", "error", undo)
 		}
-		return err
+		return nil, err
 	}
-
-	if lastWordOnly {
-		if err := s.deps.Layouts.Activate(s.layouts[target].ID()); err != nil {
-			s.log.Warn("could not switch the keyboard layout",
-				"layout", s.layouts[target].ID(), "error", err)
-		}
-	}
-	return nil
+	return s.layouts[target], nil
 }
 
 // lastRunes returns the last n runes of text.
@@ -257,7 +284,7 @@ func lastRunes(text string, n int) string {
 
 // convertByClipboard is the path for ordinary applications: select, copy,
 // convert, paste, exactly as a user would by hand.
-func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) error {
+func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) (*keymap.Layout, error) {
 	// The clipboard goes back to the user whatever happens, even after the
 	// conversion timed out.
 	snapshot := s.deps.Clipboard.Snapshot(ctx)
@@ -269,7 +296,7 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) er
 
 	selected, err := s.readText(ctx, lastWordOnly)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var head, word, tail string
@@ -279,7 +306,7 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) er
 		word = selected
 	}
 	if word == "" {
-		return ErrNothingToConvert
+		return nil, ErrNothingToConvert
 	}
 
 	source, target := s.pickLayouts(word)
@@ -289,17 +316,9 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) er
 		"characters", utf8.RuneCountInString(word))
 
 	if err := s.replace(ctx, head, converted+tail, utf8.RuneCountInString(word+tail)); err != nil {
-		return err
+		return nil, err
 	}
-
-	if lastWordOnly {
-		if err := s.deps.Layouts.Activate(s.layouts[target].ID()); err != nil {
-			// The text is already fixed; this is worth a log line and no more.
-			s.log.Warn("could not switch the keyboard layout",
-				"layout", s.layouts[target].ID(), "error", err)
-		}
-	}
-	return nil
+	return s.layouts[target], nil
 }
 
 // readText selects the text to convert, when asked to, and copies it out of

@@ -196,6 +196,21 @@ func TestConvertLastWordSwitchesLayout(t *testing.T) {
 	}
 }
 
+func TestConvertLastWordCanLeaveTheLayoutAlone(t *testing.T) {
+	s, editor, _, provider := newTestSwitcher(t, "ckjdj")
+	s.SetSwitchLayout(false)
+
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	if got := editor.String(); got != "слово" {
+		t.Errorf("text is %q, want %q", got, "слово")
+	}
+	if len(provider.activated) != 0 {
+		t.Errorf("the layout was switched to %v although switching is off", provider.activated)
+	}
+}
+
 func TestConvertLastWordTwiceReturnsToTheOriginal(t *testing.T) {
 	s, editor, _, _ := newTestSwitcher(t, "hello ckjdj")
 

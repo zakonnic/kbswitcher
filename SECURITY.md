@@ -93,7 +93,7 @@ and never to a machine-wide location (`internal/autostart`).
 
 | Path                                                | Purpose                       |
 |-----------------------------------------------------|-------------------------------|
-| `<user config>/kbswitcher/config.json`               | two settings, mode `0600`     |
+| `<user config>/kbswitcher/config.json`               | three settings, mode `0600`   |
 | `<user cache>/kbswitcher/kbswitcher.log`             | the current run's log, `0600` |
 | `<user cache>/kbswitcher/kbswitcher.lock`            | the instance lock on macOS and Linux (a named mutex, `Local\com.zakonnic.kbswitcher`, on Windows) |
 | the autostart entry, when the user ticks the box     | see above                     |

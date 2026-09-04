@@ -1,6 +1,7 @@
-// Package config stores the two settings the user can change: the hotkey and
-// whether kbswitcher starts with the session. The file is small JSON in the
-// per-user configuration directory, written with owner-only permissions.
+// Package config stores the settings the user can change: the hotkey, whether
+// kbswitcher starts with the session, and whether converting a word also
+// switches the keyboard layout. The file is small JSON in the per-user
+// configuration directory, written with owner-only permissions.
 package config
 
 import (
@@ -34,13 +35,17 @@ type Hotkey struct {
 type Config struct {
 	Hotkey    Hotkey `json:"hotkey"`
 	Autostart bool   `json:"autostart"`
+	// SwitchLayout makes the last-word hotkey also switch the keyboard to the
+	// layout the converted word belongs to.
+	SwitchLayout bool `json:"switch_layout"`
 }
 
 // Default returns the configuration of a fresh installation.
 func Default() Config {
 	return Config{
-		Hotkey:    Hotkey{Key: hotkey.DefaultKey(), Modifiers: []string{}},
-		Autostart: false,
+		Hotkey:       Hotkey{Key: hotkey.DefaultKey(), Modifiers: []string{}},
+		Autostart:    false,
+		SwitchLayout: true,
 	}
 }
 
