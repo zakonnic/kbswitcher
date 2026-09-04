@@ -1,0 +1,52 @@
+# Settings for `make lint` and the CI lint job. Requires golangci-lint v2.
+version: "2"
+
+run:
+  tests: true
+  # Only the host platform is seen; set GOOS to lint another one.
+  build-tags: []
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gosec
+    - misspell
+    - nolintlint
+    - predeclared
+    - revive
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: exported
+    gosec:
+      excludes:
+        # G103: unsafe.Pointer is the only way to reach the platform APIs.
+        - G103
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, revive]
+      # The syscall wrappers report failure through the return value, not the error.
+      - path: internal/platform/
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

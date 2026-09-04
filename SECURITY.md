@@ -1,0 +1,140 @@
+# Security notes
+
+This document is written for a reviewer. It describes what kbswitcher is able to
+do, what it deliberately cannot do, and where to look in the code to check each
+claim.
+
+## What the program is
+
+A tray utility that rewrites the last word, or the selection, as if it had been
+typed with a different keyboard layout. It has no server, no account, no
+telemetry and no background activity: between two hotkey presses the process
+sleeps.
+
+## It does not watch the keyboard
+
+This is the claim worth checking first, because a tool of this kind could
+plausibly be a keylogger, and this one is built so that it cannot be.
+
+kbswitcher registers **one key combination** with the operating system and is
+woken up only when that combination is pressed:
+
+| Platform | Call                                | File                                       |
+|----------|-------------------------------------|--------------------------------------------|
+| macOS    | `RegisterEventHotKey`               | `internal/platform/hotkey/hotkey_darwin.c` |
+| Windows  | `RegisterHotKey` + a message loop   | `internal/platform/hotkey/hotkey_windows.go` |
+| Linux    | `XGrabKey` on the root window       | `internal/platform/hotkey/hotkey_linux.c`  |
+
+None of these give the process access to any other keystroke. In particular
+kbswitcher does **not** install a `CGEventTap` (macOS), a `WH_KEYBOARD_LL` hook
+(Windows) or an `XRecord` context (Linux) — the three APIs that would let it see
+everything typed. `grep` for them: there are no matches.
+
+## What it reads, and when
+
+Only on a hotkey press, and only through the clipboard:
+
+1. the current clipboard content is copied aside, so it can be given back
+   (`internal/platform/clip`);
+2. a random marker is put on the clipboard, so that a copy that does not happen
+   cannot be mistaken for one that did;
+3. the selection is extended and copied with synthetic key presses — the same
+   shortcuts a user would press (`internal/platform/input`);
+4. the text is converted in memory (`internal/keymap`, no I/O at all);
+5. the result is pasted and the original clipboard content restored.
+
+The whole sequence lives in `internal/switcher/switcher.go` and takes about
+300 ms. Text is never written to disk, never sent anywhere, and never logged:
+the log records how many characters were converted and between which layouts,
+not what they were.
+
+## Permissions it asks for
+
+- **macOS**: Accessibility, which is what posting key events requires. Nothing
+  else — no Input Monitoring, no Full Disk Access, no camera or microphone.
+- **Windows**: none. `SendInput` and `RegisterHotKey` are unprivileged.
+- **Linux**: a connection to the X server, and the XTEST extension.
+
+Nothing is installed system-wide. The autostart entry is written to the current
+user's own launch agents, `HKEY_CURRENT_USER` Run key or XDG autostart folder,
+and never to a machine-wide location (`internal/autostart`).
+
+## Files it touches
+
+| Path                                                | Purpose                       |
+|-----------------------------------------------------|-------------------------------|
+| `<user config>/kbswitcher/config.json`               | two settings, mode `0600`     |
+| `<user cache>/kbswitcher/kbswitcher.log`             | the current run's log, `0600` |
+| `<user cache>/kbswitcher/kbswitcher.lock`            | the instance lock on macOS and Linux (a named mutex, `Local\com.zakonnic.kbswitcher`, on Windows) |
+| the autostart entry, when the user ticks the box     | see above                     |
+| the program itself, when the user installs an update | see below                     |
+
+Nothing else is created, read or deleted.
+
+## Network access
+
+There is exactly one network call, and only when the user presses **Check for
+updates** in the About window. Nothing is contacted at start-up or on a timer.
+
+`internal/updater` enforces:
+
+- HTTPS only, including through redirects, which are refused if they leave
+  HTTPS;
+- one host, the one built into the binary (`buildinfo.APIBaseURL`, GitHub by
+  default, overridable at build time for an internal instance);
+- size limits on every response (1 MB metadata, 64 KB checksums, 128 MB
+  archive);
+- a SHA-256 check of the downloaded archive against the `checksums.txt` file
+  published in the same release — a mismatch aborts the update;
+- extraction of exactly one file, matched by base name, so no archive entry can
+  decide where anything is written;
+- replacement by writing next to the current program and renaming, so an
+  interrupted update cannot leave a half-written binary.
+
+No downloaded code is executed except the new program itself, after the user has
+confirmed the update. No installer, no shell, no elevation.
+
+**Trust model.** Integrity rests on TLS to the release host plus the checksum
+published alongside the release. Whoever can publish a release can publish a
+binary. A deployment that needs a stronger guarantee should distribute
+kbswitcher through its own device management and leave the update button unused;
+on macOS it should in any case, because replacing the executable inside a signed
+application bundle invalidates its signature (the confirmation dialog says so).
+
+## Native code
+
+The macOS and Linux implementations use cgo. The C is kept in separate `.c` and
+`.h` files rather than in Go comments so that it reads as C and can be reviewed
+as such:
+
+```
+internal/platform/hotkey/hotkey_darwin.{c,h}    RegisterEventHotKey
+internal/platform/hotkey/hotkey_linux.{c,h}     XGrabKey, waiting for events
+internal/platform/layouts/layouts_darwin.{c,h}  reading the input sources
+internal/platform/layouts/layouts_linux.{c,h}   reading the XKB keymap
+internal/platform/input/input_darwin.{c,h}      posting key events
+```
+
+Every one of them is a thin wrapper over a documented system API. There is no
+memory allocated in C that Go frees, or the other way round; buffers are
+fixed-size structures allocated by the caller, with the limits declared in the
+headers.
+
+On Windows there is no cgo at all: the system calls go through
+`golang.org/x/sys/windows` and `syscall`.
+
+## Dependencies
+
+| Module                        | Why                                    |
+|-------------------------------|----------------------------------------|
+| `fyne.io/fyne/v2`             | tray icon, Settings and About windows  |
+| `golang.design/x/clipboard`   | reading and writing the clipboard      |
+| `golang.org/x/sys`            | the Windows system calls               |
+
+`go.mod` pins every version and `go.sum` records their hashes. `make lint` runs
+golangci-lint with `gosec` enabled.
+
+## Reporting a problem
+
+Open an issue in the repository, or contact the team that owns it. Please do not
+include the text you were converting when the problem happened.
