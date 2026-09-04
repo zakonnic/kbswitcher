@@ -109,8 +109,16 @@ log every conversion.
 
 ## What it cannot do
 
-- **Terminals.** Most terminals do not answer `Ctrl+Shift+Left` or `Ctrl+C` the
-  way a text field does, so the hotkey does nothing there.
+- **Terminals kbswitcher cannot read.** On Windows a console is rewritten
+  directly rather than through the clipboard, which covers the classic console
+  window, Windows Terminal and the shells inside them, WSL included. Git Bash
+  (mintty) has no Windows console at all, and an editor with a terminal pane —
+  VS Code, a JetBrains IDE — does not say which pane has the focus; there the
+  hotkey falls back to the clipboard and finds nothing. On macOS and Linux every
+  terminal takes the clipboard path.
+- **Selections in a terminal.** A console has no selection kbswitcher can read,
+  so `Shift`+hotkey there converts the whole line you have typed instead of a
+  fragment.
 - **Formatting.** The replacement is pasted as plain text. In a rich text editor
   the word that was replaced loses its formatting; the rest of the line does
   not, because the selection is narrowed to the word before pasting.
@@ -130,6 +138,7 @@ internal/switcher   what a hotkey press does, start to finish
 internal/platform   everything the operating system provides:
     hotkey            registering a system-wide key combination
     input             pressing keys in the focused window
+    console           reading and rewriting a Windows console input line
     layouts           reading the installed layouts and their characters
     clip              borrowing and giving back the clipboard
 internal/config     the settings file
@@ -137,7 +146,6 @@ internal/autostart  the "start with the session" entry
 internal/singleinstance  the lock that keeps a second copy from running
 internal/updater    checking for and installing a release
 internal/ui         tray icon, Settings and About
-tools/icongen       draws the tray icon
 ```
 
 The conversion core has no dependency on any operating system and is covered by

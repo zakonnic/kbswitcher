@@ -28,11 +28,14 @@ woken up only when that combination is pressed:
 None of these give the process access to any other keystroke. In particular
 kbswitcher does **not** install a `CGEventTap` (macOS), a `WH_KEYBOARD_LL` hook
 (Windows) or an `XRecord` context (Linux) — the three APIs that would let it see
-everything typed. `grep` for them: there are no matches.
+everything typed. `grep` the sources for them: there are no matches. There is
+no setting that turns such a hook on; remembering keystrokes is out of scope by
+design.
 
 ## What it reads, and when
 
-Only on a hotkey press, and only through the clipboard:
+Only on a hotkey press. In an ordinary application it goes through the
+clipboard:
 
 1. the current clipboard content is copied aside, so it can be given back
    (`internal/platform/clip`);
@@ -47,6 +50,33 @@ The whole sequence lives in `internal/switcher/switcher.go` and takes about
 300 ms. Text is never written to disk, never sent anywhere, and never logged:
 the log records how many characters were converted and between which layouts,
 not what they were.
+
+## It reads consoles through the Windows console API
+
+A terminal answers `Ctrl+C` by cancelling the line, not by copying, so on
+Windows the clipboard path cannot work there. Instead, **on a hotkey press
+only**, kbswitcher does this (`internal/platform/console`):
+
+1. it looks at the foreground window's class, and stops unless it is a console
+   window or Windows Terminal; an editor with a terminal pane is left alone,
+   because Windows cannot say which pane has the focus;
+2. it walks that window's process tree and calls `AttachConsole` on each
+   process until it finds the console behind the window; a host with several
+   consoles that cannot be told apart by title is left alone;
+3. it reads the row the caret is on with `ReadConsoleOutputCharacterW` — the
+   text the shell is already showing on screen, nothing hidden, nothing
+   scrolled back;
+4. it writes backspaces and characters into that console's input buffer with
+   `WriteConsoleInputW`, and checks the caret to see how much the shell agreed
+   to erase. A shell never erases its own prompt, which is what keeps a wrong
+   guess from destroying anything;
+5. it detaches with `FreeConsole` before returning.
+
+While attached it sets `SetConsoleCtrlHandler(NULL, TRUE)`, so a `Ctrl+C` in
+the borrowed console cannot reach kbswitcher. The attachment lasts for the
+length of one conversion, a few dozen milliseconds. Nothing is read between
+hotkey presses. An elevated console refuses the attachment, and kbswitcher
+falls back to the clipboard rather than asking for elevation.
 
 ## Permissions it asks for
 

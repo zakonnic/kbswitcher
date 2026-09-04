@@ -150,8 +150,8 @@ func newTestSwitcher(t *testing.T, text string) (*Switcher, *fakeEditor, *fakeCl
 	options.KeyDelay = 0
 	options.PasteSettle = 0
 
-	s, err := New(layouts, provider, editor, clipboard, options,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	deps := Deps{Layouts: provider, Keyboard: editor, Clipboard: clipboard}
+	s, err := New(layouts, deps, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestConvertIsNotReentrant(t *testing.T) {
 }
 
 func TestNewNeedsTwoLayouts(t *testing.T) {
-	_, err := New(keymap.Fallback()[:1], &fakeLayouts{}, nil, nil,
+	_, err := New(keymap.Fallback()[:1], Deps{Layouts: &fakeLayouts{}},
 		DefaultOptions(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if !errors.Is(err, ErrNotEnoughLayouts) {
 		t.Errorf("New with one layout = %v, want ErrNotEnoughLayouts", err)

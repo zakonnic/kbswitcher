@@ -43,6 +43,27 @@ type Clipboard interface {
 	AwaitText(ctx context.Context, exclude string) (string, error)
 }
 
+// Terminal borrows the console of the shell behind the focused window. A
+// console answers no copy or paste shortcut, so its input line is read and
+// rewritten directly instead.
+type Terminal interface {
+	// Open fails, and the clipboard path is used, whenever the focused window
+	// is an ordinary application or its console cannot be identified.
+	Open() (Console, error)
+}
+
+// Console is one borrowed console, held for the length of a conversion.
+type Console interface {
+	// Line returns the input row up to the caret, prompt included.
+	Line() (string, error)
+	// Delete asks the shell to erase n characters before the caret and reports
+	// how many it agreed to erase; a shell never erases its own prompt.
+	Delete(n int) (int, error)
+	// Type writes text into the input line.
+	Type(text string) error
+	Close() error
+}
+
 // Layouts reports and changes the layout of the focused window.
 type Layouts interface {
 	Active() (string, error)
@@ -90,34 +111,32 @@ func DefaultOptions() Options {
 	}
 }
 
+// Deps are the platform pieces a conversion works through. Terminal is
+// optional; without it every window takes the clipboard path.
+type Deps struct {
+	Layouts   Layouts
+	Keyboard  Keyboard
+	Clipboard Clipboard
+	Terminal  Terminal
+}
+
 // Switcher converts text between the layouts installed on the machine.
 type Switcher struct {
-	layouts   []*keymap.Layout
-	provider  Layouts
-	keyboard  Keyboard
-	clipboard Clipboard
-	options   Options
-	log       *slog.Logger
+	layouts []*keymap.Layout
+	deps    Deps
+	options Options
+	log     *slog.Logger
 
 	// busy admits one conversion at a time.
 	busy sync.Mutex
 }
 
 // New builds a switcher over the layouts read at start-up.
-func New(layouts []*keymap.Layout, provider Layouts, keyboard Keyboard,
-	clipboard Clipboard, options Options, log *slog.Logger,
-) (*Switcher, error) {
+func New(layouts []*keymap.Layout, deps Deps, options Options, log *slog.Logger) (*Switcher, error) {
 	if len(layouts) < 2 {
 		return nil, ErrNotEnoughLayouts
 	}
-	return &Switcher{
-		layouts:   layouts,
-		provider:  provider,
-		keyboard:  keyboard,
-		clipboard: clipboard,
-		options:   options,
-		log:       log,
-	}, nil
+	return &Switcher{layouts: layouts, deps: deps, options: options, log: log}, nil
 }
 
 // Layouts returns the layouts the switcher cycles through, in order.
@@ -141,11 +160,109 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	}
 	defer s.busy.Unlock()
 
+	if console := s.console(); console != nil {
+		defer func() {
+			if err := console.Close(); err != nil {
+				s.log.Warn("could not release the console", "error", err)
+			}
+		}()
+		return s.convertInConsole(console, lastWordOnly)
+	}
+	return s.convertByClipboard(ctx, lastWordOnly)
+}
+
+// active is the index of the layout the focused window uses, or the first one.
+func (s *Switcher) active() int {
+	if id, err := s.deps.Layouts.Active(); err == nil {
+		if index := s.indexOf(id); index >= 0 {
+			return index
+		}
+	}
+	return 0
+}
+
+// console borrows the console behind the focused window, or returns nil when
+// the clipboard path is the one to use.
+func (s *Switcher) console() Console {
+	if s.deps.Terminal == nil {
+		return nil
+	}
+	console, err := s.deps.Terminal.Open()
+	if err != nil {
+		s.log.Debug("no console behind the focused window", "reason", err)
+		return nil
+	}
+	return console
+}
+
+// convertInConsole rewrites the shell's input line in place. How much the
+// shell agrees to erase is what bounds the conversion: a prompt refuses, so a
+// hotkey pressed on an empty line changes nothing.
+func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) error {
+	line, err := console.Line()
+	if err != nil {
+		return err
+	}
+
+	// Without a word to isolate, everything the shell lets go of is converted,
+	// which is the whole command the user typed.
+	typed := line
+	if lastWordOnly {
+		_, word, tail := keymap.SplitLastWord(line)
+		typed = word + tail
+	}
+	if typed == "" {
+		return ErrNothingToConvert
+	}
+
+	erased, err := console.Delete(utf8.RuneCountInString(typed))
+	if err != nil {
+		return err
+	}
+	if erased == 0 {
+		return ErrNothingToConvert
+	}
+
+	word := lastRunes(typed, erased)
+	source, target := s.pickLayouts(word)
+	converted := keymap.Convert(word, s.layouts[source], s.layouts[target])
+	s.log.Debug("converting in a console",
+		"from", s.layouts[source].ID(), "to", s.layouts[target].ID(),
+		"characters", erased)
+
+	if err := console.Type(converted); err != nil {
+		if undo := console.Type(word); undo != nil {
+			s.log.Error("the erased text could not be put back", "error", undo)
+		}
+		return err
+	}
+
+	if lastWordOnly {
+		if err := s.deps.Layouts.Activate(s.layouts[target].ID()); err != nil {
+			s.log.Warn("could not switch the keyboard layout",
+				"layout", s.layouts[target].ID(), "error", err)
+		}
+	}
+	return nil
+}
+
+// lastRunes returns the last n runes of text.
+func lastRunes(text string, n int) string {
+	runes := []rune(text)
+	if n >= len(runes) {
+		return text
+	}
+	return string(runes[len(runes)-n:])
+}
+
+// convertByClipboard is the path for ordinary applications: select, copy,
+// convert, paste, exactly as a user would by hand.
+func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) error {
 	// The clipboard goes back to the user whatever happens, even after the
 	// conversion timed out.
-	snapshot := s.clipboard.Snapshot(ctx)
+	snapshot := s.deps.Clipboard.Snapshot(ctx)
 	defer func() {
-		if err := s.clipboard.Restore(context.WithoutCancel(ctx), snapshot); err != nil {
+		if err := s.deps.Clipboard.Restore(context.WithoutCancel(ctx), snapshot); err != nil {
 			s.log.Warn("could not restore the clipboard", "error", err)
 		}
 	}()
@@ -176,7 +293,7 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	}
 
 	if lastWordOnly {
-		if err := s.provider.Activate(s.layouts[target].ID()); err != nil {
+		if err := s.deps.Layouts.Activate(s.layouts[target].ID()); err != nil {
 			// The text is already fixed; this is worth a log line and no more.
 			s.log.Warn("could not switch the keyboard layout",
 				"layout", s.layouts[target].ID(), "error", err)
@@ -188,27 +305,27 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 // readText selects the text to convert, when asked to, and copies it out of
 // the focused application.
 func (s *Switcher) readText(ctx context.Context, selectWord bool) (string, error) {
-	if err := s.keyboard.ReleaseModifiers(); err != nil {
+	if err := s.deps.Keyboard.ReleaseModifiers(); err != nil {
 		return "", err
 	}
 
 	// The marker tells a fresh copy apart from content that was already there.
 	marker := marker()
-	if err := s.clipboard.WriteText(ctx, marker); err != nil {
+	if err := s.deps.Clipboard.WriteText(ctx, marker); err != nil {
 		return "", err
 	}
 
 	if selectWord {
-		if err := s.keyboard.SelectWordLeft(s.options.WordSelections); err != nil {
+		if err := s.deps.Keyboard.SelectWordLeft(s.options.WordSelections); err != nil {
 			return "", err
 		}
 		s.pause()
 	}
-	if err := s.keyboard.Copy(); err != nil {
+	if err := s.deps.Keyboard.Copy(); err != nil {
 		return "", err
 	}
 
-	text, err := s.clipboard.AwaitText(ctx, marker)
+	text, err := s.deps.Clipboard.AwaitText(ctx, marker)
 	if errors.Is(err, clip.ErrNoCopy) {
 		return "", fmt.Errorf("%w: the application did not answer the copy shortcut", ErrNothingToConvert)
 	}
@@ -224,11 +341,11 @@ func (s *Switcher) readText(ctx context.Context, selectWord bool) (string, error
 func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, replacementChars int) error {
 	narrow := unchanged != "" && replacementChars > 0 && replacementChars <= s.options.MaxNarrowedChars
 	if narrow {
-		if err := s.keyboard.CollapseSelectionRight(); err != nil {
+		if err := s.deps.Keyboard.CollapseSelectionRight(); err != nil {
 			return err
 		}
 		s.pause()
-		if err := s.keyboard.SelectCharsLeft(replacementChars); err != nil {
+		if err := s.deps.Keyboard.SelectCharsLeft(replacementChars); err != nil {
 			return err
 		}
 		s.pause()
@@ -236,11 +353,11 @@ func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, r
 		replacement = unchanged + replacement
 	}
 
-	if err := s.clipboard.WriteText(ctx, replacement); err != nil {
+	if err := s.deps.Clipboard.WriteText(ctx, replacement); err != nil {
 		return err
 	}
 	s.pause()
-	if err := s.keyboard.Paste(); err != nil {
+	if err := s.deps.Keyboard.Paste(); err != nil {
 		return err
 	}
 	s.settle()
@@ -249,17 +366,8 @@ func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, r
 
 // pickLayouts guesses which layout the text was typed in and picks the next
 // one in the cycle as the target. The active layout wins ties.
-func (s *Switcher) pickLayouts(text string) (source, target int) {
-	preferred := 0
-	if id, err := s.provider.Active(); err == nil {
-		if index := s.indexOf(id); index >= 0 {
-			preferred = index
-		}
-	} else {
-		s.log.Debug("could not read the active layout", "error", err)
-	}
-
-	source = keymap.Detect(text, s.layouts, preferred)
+func (s *Switcher) pickLayouts(typed string) (source, target int) {
+	source = keymap.Detect(typed, s.layouts, s.active())
 	return source, (source + 1) % len(s.layouts)
 }
 

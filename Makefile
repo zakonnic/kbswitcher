@@ -72,10 +72,6 @@ tidy: ## Tidy go.mod and go.sum
 .PHONY: check
 check: fmt vet test ## Format, vet and test
 
-.PHONY: icon
-icon: ## Redraw the tray icon from tools/icongen
-	go run ./tools/icongen
-
 .PHONY: bundle
 bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 	@test "$(GOOS)" = "darwin" || (echo "bundle is only meaningful on macOS"; exit 1)

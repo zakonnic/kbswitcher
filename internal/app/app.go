@@ -14,6 +14,7 @@ import (
 	"github.com/zakonnic/kbswitcher/internal/config"
 	"github.com/zakonnic/kbswitcher/internal/keymap"
 	"github.com/zakonnic/kbswitcher/internal/platform/clip"
+	"github.com/zakonnic/kbswitcher/internal/platform/console"
 	"github.com/zakonnic/kbswitcher/internal/platform/hotkey"
 	"github.com/zakonnic/kbswitcher/internal/platform/input"
 	"github.com/zakonnic/kbswitcher/internal/platform/layouts"
@@ -187,9 +188,26 @@ func (a *App) buildSwitcher() error {
 			"characters", layout.Size())
 	}
 
-	a.switcher, err = switcher.New(installed, a.layouts, a.keyboard, a.clipboard,
-		switcher.DefaultOptions(), a.log)
+	deps := switcher.Deps{
+		Layouts:   a.layouts,
+		Keyboard:  a.keyboard,
+		Clipboard: a.clipboard,
+		Terminal:  terminal{},
+	}
+	a.switcher, err = switcher.New(installed, deps, switcher.DefaultOptions(), a.log)
 	return err
+}
+
+// terminal hands the switcher the console behind the focused window. It is a
+// separate type only so that the switcher stays free of platform code.
+type terminal struct{}
+
+func (terminal) Open() (switcher.Console, error) {
+	session, err := console.Open()
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 // bindHotkeys replaces the current bindings with the configured combination and

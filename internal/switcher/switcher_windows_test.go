@@ -37,8 +37,8 @@ func TestConvertWithTheInstalledLayouts(t *testing.T) {
 	options.KeyDelay = 0
 	options.PasteSettle = 0
 
-	s, err := New(installed, provider, editor, clipboard, options,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	deps := Deps{Layouts: provider, Keyboard: editor, Clipboard: clipboard}
+	s, err := New(installed, deps, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
