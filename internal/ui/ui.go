@@ -57,6 +57,7 @@ type App struct {
 func New(options Options) *App {
 	fyneApp := fyneapp.NewWithID(buildinfo.ID)
 	fyneApp.SetIcon(icon())
+	fyneApp.Settings().SetTheme(newTheme())
 
 	return &App{
 		fyne:    fyneApp,

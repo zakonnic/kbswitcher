@@ -36,14 +36,17 @@ func (a *App) showAbout() {
 
 	panel := newUpdatePanel(a, window)
 
-	window.SetContent(container.NewPadded(container.NewBorder(
+	window.SetContent(container.New(windowPadding(), container.NewBorder(
 		nil,
 		container.NewVBox(
 			panel.status,
-			container.NewHBox(layout.NewSpacer(), panel.button, widget.NewButton("Close", window.Hide)),
+			container.NewHBox(layout.NewSpacer(), panel.button, gap(6, 0), newButton("Close", window.Hide)),
 		),
 		nil, nil,
-		container.NewVScroll(container.NewVBox(description, repositoryLink())),
+		container.NewVScroll(card(container.New(
+			layout.NewCustomPaddedLayout(cardPadding, cardPadding, cardPadding, cardPadding),
+			container.NewVBox(description, repositoryLink()),
+		))),
 	)))
 	window.Resize(aboutWindowSize)
 	window.CenterOnScreen()
@@ -92,7 +95,7 @@ type updatePanel struct {
 	app    *App
 	window fyne.Window
 	status *widget.Label
-	button *widget.Button
+	button *button
 }
 
 func newUpdatePanel(app *App, window fyne.Window) *updatePanel {
@@ -100,22 +103,22 @@ func newUpdatePanel(app *App, window fyne.Window) *updatePanel {
 		app:    app,
 		window: window,
 		status: widget.NewLabel(""),
-		button: widget.NewButton("Check for updates", nil),
+		button: newButton("Check for updates", nil),
 	}
 	p.status.Wrapping = fyne.TextWrapWord
-	p.button.Importance = widget.HighImportance
+	p.button.primary = true
 	if app.options.Updater == nil {
-		p.button.Disable()
+		p.button.disable()
 		p.status.SetText("Updates are unavailable; see the warnings above.")
 		return p
 	}
-	p.button.OnTapped = p.check
+	p.button.onTapped = p.check
 	return p
 }
 
 // check asks for the latest release and offers to install it when it is newer.
 func (p *updatePanel) check() {
-	p.button.Disable()
+	p.button.disable()
 	p.status.SetText("Looking for a newer release…")
 	u := p.app.options.Updater
 
@@ -123,7 +126,7 @@ func (p *updatePanel) check() {
 		release, err := u.Latest(context.Background())
 
 		fyne.Do(func() {
-			p.button.Enable()
+			p.button.enable()
 			switch {
 			case err != nil:
 				p.app.log.Warn("update check failed", "error", err)
@@ -161,7 +164,7 @@ func (p *updatePanel) confirm(release updater.Release) {
 
 // install downloads and installs a release, then offers to restart.
 func (p *updatePanel) install(release updater.Release) {
-	p.button.Disable()
+	p.button.disable()
 	p.status.SetText("Downloading " + release.Version + "…")
 	u := p.app.options.Updater
 
@@ -169,7 +172,7 @@ func (p *updatePanel) install(release updater.Release) {
 		path, err := u.Update(context.Background(), release)
 
 		fyne.Do(func() {
-			p.button.Enable()
+			p.button.enable()
 			if err != nil {
 				p.app.log.Error("update failed", "version", release.Version, "error", err)
 				p.status.SetText("Update failed: " + err.Error())
