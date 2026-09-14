@@ -55,6 +55,8 @@ type fakeEditor struct {
 	clipboard *fakeClipboard
 	// deaf makes the editor ignore the copy shortcut.
 	deaf bool
+	// copies counts the copy shortcuts answered.
+	copies int
 }
 
 func newEditor(text string, clipboard *fakeClipboard) *fakeEditor {
@@ -105,6 +107,7 @@ func (e *fakeEditor) Copy() error {
 	if e.deaf {
 		return nil
 	}
+	e.copies++
 	e.clipboard.text = string(e.text[e.selStart:e.selEnd])
 	return nil
 }
@@ -170,6 +173,9 @@ func TestConvertLastWord(t *testing.T) {
 		{"punctuation at the start of the line", ";bpym", "жизнь"},
 		{"trailing space is kept", "hello ckjdj ", "hello слово "},
 		{"capitals are kept", "Ghbdtn", "Привет"},
+		{"punctuation inside the word", "hello j,]`v", "hello объём"},
+		{"punctuation inside the only word", "j,]`v", "объём"},
+		{"word ending in punctuation", "hello ckjdj/", "hello слово."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,6 +187,17 @@ func TestConvertLastWord(t *testing.T) {
 				t.Errorf("text is %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestAPlainWordIsCopiedOnce(t *testing.T) {
+	s, editor, _, _ := newTestSwitcher(t, "hello ckjdj")
+
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	if editor.copies != 1 {
+		t.Errorf("the word was copied %d times, want once", editor.copies)
 	}
 }
 

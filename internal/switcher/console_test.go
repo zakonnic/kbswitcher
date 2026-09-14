@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -125,7 +126,7 @@ func TestConvertSelectionInAConsoleTakesTheWholeLine(t *testing.T) {
 }
 
 func TestAWindowWithoutAConsoleFallsBackToTheClipboard(t *testing.T) {
-	terminal := &fakeTerminal{err: errors.New("not a console")}
+	terminal := &fakeTerminal{err: fmt.Errorf("%w: window class Notepad", ErrNoConsole)}
 	s, _, editor := consoleSwitcher(t, terminal, "hello ckjdj")
 
 	if err := s.ConvertLastWord(t.Context()); err != nil {
@@ -133,5 +134,23 @@ func TestAWindowWithoutAConsoleFallsBackToTheClipboard(t *testing.T) {
 	}
 	if got := editor.String(); got != "hello слово" {
 		t.Errorf("the text is %q, want %q", got, "hello слово")
+	}
+}
+
+func TestATerminalThatCannotBeIdentifiedIsLeftAlone(t *testing.T) {
+	// The clipboard shortcuts would cancel or mangle the shell's line, so a
+	// terminal whose console cannot be told apart gets nothing at all.
+	ambiguous := errors.New("two consoles look the same")
+	s, clipboard, editor := consoleSwitcher(t, &fakeTerminal{err: ambiguous}, "hello ckjdj")
+
+	err := s.ConvertLastWord(t.Context())
+	if !errors.Is(err, ambiguous) {
+		t.Fatalf("ConvertLastWord: %v, want %v", err, ambiguous)
+	}
+	if got := editor.String(); got != "hello ckjdj" {
+		t.Errorf("the text became %q", got)
+	}
+	if editor.copies != 0 || clipboard.text != "" {
+		t.Errorf("the clipboard path ran: %d copies, clipboard %q", editor.copies, clipboard.text)
 	}
 }

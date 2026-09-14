@@ -39,9 +39,10 @@ linters:
     rules:
       - path: _test\.go
         linters: [errcheck, gosec, revive]
-      # The syscall wrappers report failure through the return value, not the error.
       - path: internal/platform/
         linters: [errcheck]
+      - path: tools/
+        linters: [errcheck, gosec]
 
 formatters:
   enable:

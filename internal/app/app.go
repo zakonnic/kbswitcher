@@ -210,6 +210,9 @@ type terminal struct{}
 
 func (terminal) Open() (switcher.Console, error) {
 	session, err := console.Open()
+	if errors.Is(err, console.ErrNotConsole) {
+		return nil, fmt.Errorf("%w: %w", switcher.ErrNoConsole, err)
+	}
 	if err != nil {
 		return nil, err
 	}

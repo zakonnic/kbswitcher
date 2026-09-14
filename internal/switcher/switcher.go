@@ -48,10 +48,15 @@ type Clipboard interface {
 // console answers no copy or paste shortcut, so its input line is read and
 // rewritten directly instead.
 type Terminal interface {
-	// Open fails, and the clipboard path is used, whenever the focused window
-	// is an ordinary application or its console cannot be identified.
+	// Open fails with ErrNoConsole, and the clipboard path is used, when the
+	// focused window is an ordinary application. Any other failure means the
+	// window is a terminal that cannot be worked with, and nothing is done: a
+	// shell answers the clipboard shortcuts by canceling or mangling the line.
 	Open() (Console, error)
 }
+
+// ErrNoConsole is what a Terminal reports for a window without a console.
+var ErrNoConsole = errors.New("the focused window has no console")
 
 // Console is one borrowed console, held for the length of a conversion.
 type Console interface {
@@ -90,12 +95,13 @@ type Options struct {
 	// PasteSettle is how long the converted text stays on the clipboard after
 	// the paste, before the previous content is restored.
 	PasteSettle time.Duration
-	// WordSelections is how many times "select the previous word" is sent.
-	// Two, because text fields treat punctuation as a word boundary while it
-	// may be part of the word in another layout: ";bpym" is "жизнь". Only the
-	// last whitespace-delimited word is converted, so selecting more changes
-	// nothing.
-	WordSelections int
+	// WordSelections are the "select the previous word" presses sent in
+	// successive rounds. Applications stop at punctuation, which may be a
+	// letter in another layout (";bpym" is "жизнь", "j,]`v" is "объём"), so
+	// after each round the selection is copied and, unless whitespace precedes
+	// the last word by now, the next round adds more presses. Selecting too
+	// much is harmless: only the last whitespace-delimited word is replaced.
+	WordSelections []int
 	// MaxNarrowedChars bounds the "select exactly the word again" step. Beyond
 	// it the whole selection is replaced, which costs formatting in rich text
 	// editors but never sends hundreds of key presses.
@@ -107,7 +113,7 @@ func DefaultOptions() Options {
 	return Options{
 		KeyDelay:         30 * time.Millisecond,
 		PasteSettle:      150 * time.Millisecond,
-		WordSelections:   2,
+		WordSelections:   []int{2, 6, 8},
 		MaxNarrowedChars: 120,
 	}
 }
@@ -186,7 +192,11 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 // when there is one and through the clipboard otherwise, and reports the
 // layout the text was rewritten for.
 func (s *Switcher) rewrite(ctx context.Context, lastWordOnly bool) (*keymap.Layout, error) {
-	if console := s.console(); console != nil {
+	console, err := s.console()
+	if err != nil {
+		return nil, err
+	}
+	if console != nil {
 		defer func() {
 			if err := console.Close(); err != nil {
 				s.log.Warn("could not release the console", "error", err)
@@ -215,18 +225,23 @@ func (s *Switcher) active() int {
 	return 0
 }
 
-// console borrows the console behind the focused window, or returns nil when
-// the clipboard path is the one to use.
-func (s *Switcher) console() Console {
+// console borrows the console behind the focused window. It returns nil when
+// the window has none and the clipboard path is the one to use, and an error
+// when the window is a terminal that must be left alone.
+func (s *Switcher) console() (Console, error) {
 	if s.deps.Terminal == nil {
-		return nil
+		return nil, nil
 	}
 	console, err := s.deps.Terminal.Open()
-	if err != nil {
+	switch {
+	case err == nil:
+		return console, nil
+	case errors.Is(err, ErrNoConsole):
 		s.log.Debug("no console behind the focused window", "reason", err)
-		return nil
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("the terminal is left alone: %w", err)
 	}
-	return console
 }
 
 // convertInConsole rewrites the shell's input line in place. How much the
@@ -321,24 +336,46 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) (*
 	return s.layouts[target], nil
 }
 
-// readText selects the text to convert, when asked to, and copies it out of
-// the focused application.
+// readText copies the text to convert out of the focused application: the
+// selection as it is, or the last word after selecting it.
 func (s *Switcher) readText(ctx context.Context, selectWord bool) (string, error) {
 	if err := s.deps.Keyboard.ReleaseModifiers(); err != nil {
 		return "", err
 	}
-
-	// The marker tells a fresh copy apart from content that was already there.
-	marker := marker()
-	if err := s.deps.Clipboard.WriteText(ctx, marker); err != nil {
-		return "", err
+	if !selectWord {
+		return s.copySelection(ctx)
 	}
+	return s.selectLastWord(ctx)
+}
 
-	if selectWord {
-		if err := s.deps.Keyboard.SelectWordLeft(s.options.WordSelections); err != nil {
+// selectLastWord extends the selection backwards word by word until
+// whitespace precedes the last word or the selection stops growing, and
+// returns what is selected.
+func (s *Switcher) selectLastWord(ctx context.Context) (string, error) {
+	var selected string
+	for _, presses := range s.options.WordSelections {
+		if err := s.deps.Keyboard.SelectWordLeft(presses); err != nil {
 			return "", err
 		}
 		s.pause()
+		text, err := s.copySelection(ctx)
+		if err != nil {
+			return "", err
+		}
+		if head, _, _ := keymap.SplitLastWord(text); head != "" || text == selected {
+			return text, nil
+		}
+		selected = text
+	}
+	return selected, nil
+}
+
+// copySelection copies the selection through the clipboard. The marker tells
+// a fresh copy apart from content that was already there.
+func (s *Switcher) copySelection(ctx context.Context) (string, error) {
+	marker := marker()
+	if err := s.deps.Clipboard.WriteText(ctx, marker); err != nil {
+		return "", err
 	}
 	if err := s.deps.Keyboard.Copy(); err != nil {
 		return "", err
