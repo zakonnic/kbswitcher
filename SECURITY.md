@@ -47,9 +47,18 @@ clipboard:
 5. the result is pasted and the original clipboard content restored.
 
 The whole sequence lives in `internal/switcher/switcher.go` and takes about
-300 ms. Text is never written to disk, never sent anywhere, and never logged:
+100 ms. Text is never written to disk, never sent anywhere, and never logged:
 the log records how many characters were converted and between which layouts,
 not what they were.
+
+On Windows everything kbswitcher writes to the clipboard (the marker, the
+converted text, the restored content) carries the formats
+`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`
+and `CanUploadToCloudClipboard`, so clipboard history and cloud sync skip it
+(`internal/platform/clip/clip_windows.go`). The copy the application itself
+makes of the selected word is the application's, and is not marked. A program
+that reads every clipboard change regardless, as a remote desktop client
+does, still sees what passes through.
 
 ## It reads consoles through the Windows console API
 
@@ -58,25 +67,35 @@ Windows the clipboard path cannot work there. Instead, **on a hotkey press
 only**, kbswitcher does this (`internal/platform/console`):
 
 1. it looks at the foreground window's class, and stops unless it is a console
-   window or Windows Terminal; an editor with a terminal pane is left alone,
-   because Windows cannot say which pane has the focus;
+   window, Windows Terminal, or a Chromium window whose process runs a shell
+   (VS Code and other editors built on xterm.js);
 2. it walks that window's process tree and calls `AttachConsole` on each
-   process until it finds the console behind the window; a host with several
-   consoles that cannot be told apart by title is left alone;
-3. it reads the row the caret is on with `ReadConsoleOutputCharacterW` — the
-   text the shell is already showing on screen, nothing hidden, nothing
-   scrolled back;
-4. it writes backspaces and characters into that console's input buffer with
-   `WriteConsoleInputW`, and checks the caret to see how much the shell agreed
-   to erase. A shell never erases its own prompt, which is what keeps a wrong
-   guess from destroying anything;
-5. it detaches with `FreeConsole` before returning.
+   process to find the consoles behind the window;
+3. when there are several, or the window is an editor, it asks UI Automation
+   which element has the keyboard focus: Windows Terminal reports the rows
+   around its caret, an xterm.js terminal the position of its caret cell in
+   its grid. Exactly one console must match, or nothing is touched; an editor
+   whose focus is not on a terminal takes the clipboard path
+   (`internal/platform/console/uia_windows.go`);
+4. it writes a Home key (and End, for a selection) into that console's input
+   buffer with `WriteConsoleInputW` and reads the cells between the places the
+   shell puts the caret with `ReadConsoleOutputCharacterW` — the input line the
+   shell is already showing, never its prompt, nothing scrolled back;
+5. it writes arrows, backspaces and the converted characters the same way, and
+   watches the line until it shows the result
+   (`internal/platform/console/edit_windows.go`);
+6. it detaches with `FreeConsole` before returning.
 
 While attached it sets `SetConsoleCtrlHandler(NULL, TRUE)`, so a `Ctrl+C` in
 the borrowed console cannot reach kbswitcher. The attachment lasts for the
 length of one conversion, a few dozen milliseconds. Nothing is read between
 hotkey presses. An elevated console refuses the attachment, and kbswitcher
-falls back to the clipboard rather than asking for elevation.
+does nothing there rather than ask for elevation.
+
+The first UI Automation question makes a Chromium application build its
+accessibility tree, as any assistive tool does. kbswitcher asks only for the
+focused element's class name and rectangle, and for Windows Terminal the rows
+around the caret; it never reads the content of an editor that way.
 
 ## Permissions it asks for
 
@@ -158,7 +177,7 @@ On Windows there is no cgo at all: the system calls go through
 | Module                        | Why                                    |
 |-------------------------------|----------------------------------------|
 | `fyne.io/fyne/v2`             | tray icon, Settings and About windows  |
-| `golang.design/x/clipboard`   | reading and writing the clipboard      |
+| `golang.design/x/clipboard`   | the clipboard on macOS and Linux       |
 | `golang.org/x/sys`            | the Windows system calls               |
 
 `go.mod` pins every version and `go.sum` records their hashes. `make lint` runs

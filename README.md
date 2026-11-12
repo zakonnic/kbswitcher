@@ -17,7 +17,8 @@ ckjdj   →  слово
   the keyboard to the layout that word now belongs to, so you can keep typing.
   The switch can be turned off in Settings.
 - **Shift+Break** (**Shift+F12** on a Mac) rewrites the selected text and leaves
-  the keyboard layout alone.
+  the keyboard layout alone. In a Windows terminal it rewrites what the shell
+  shows as selected, or the whole input line when nothing is.
 
 Both are configurable. kbswitcher lives in the system tray, and runs on macOS,
 Windows and Linux.
@@ -36,6 +37,10 @@ When the hotkey fires, it does what you would do by hand:
 2. copy;
 3. work out which layout the text was typed in, and rewrite it for the next one;
 4. paste the result and give your clipboard back.
+
+On Windows, what kbswitcher puts on the clipboard along the way is marked so
+that clipboard history (Win+V) and cloud clipboard sync leave it out, and the
+clipboard is given back the moment the application has read the paste.
 
 The layouts themselves are read from the operating system at start-up, from the
 same tables it uses to turn key presses into characters: `UCKeyTranslate` on
@@ -113,23 +118,27 @@ log every conversion.
 
 - **Terminals kbswitcher cannot read.** On Windows a console is rewritten
   directly rather than through the clipboard, which covers the classic console
-  window, Windows Terminal and the shells inside them, WSL included. Git Bash
-  (mintty) has no Windows console at all, and an editor with a terminal pane —
-  VS Code, a JetBrains IDE — does not say which pane has the focus; there the
-  hotkey falls back to the clipboard and finds nothing. On macOS and Linux every
-  terminal takes the clipboard path.
-- **Selections in a terminal.** A console has no selection kbswitcher can read,
-  so `Shift`+hotkey there converts the whole line you have typed instead of a
-  fragment.
+  window, Windows Terminal, the terminal pane of VS Code and other editors
+  built on xterm.js, and the shells inside them: PowerShell, cmd, Git Bash, WSL.
+  Git Bash in its own window (mintty) has no Windows console at all, and there
+  the hotkey does nothing. A JetBrains IDE does not say whether its terminal
+  pane has the focus, so the hotkey takes the clipboard path there, which a
+  terminal pane does not answer. Two terminals of one editor that are the same
+  size and have their carets on the same cell cannot be told apart, and neither
+  is touched. On macOS and Linux every terminal takes the clipboard path.
+- **Selections in a terminal.** A selection made with the mouse belongs to the
+  terminal window and no shell knows of it, so `Shift`+hotkey converts what the
+  shell itself shows as selected (`Shift`+arrows in PowerShell), and the whole
+  input line otherwise.
 - **Formatting.** The replacement is pasted as plain text. In a rich text editor
   the word that was replaced loses its formatting; the rest of the line does
   not, because the selection is narrowed to the word before pasting.
 - **Characters that need AltGr.** Only unshifted and shifted key presses are
   reproduced. Anything typed with a third or fourth level is copied through
   unchanged.
-- **Clipboard formats other than text, images and file lists** are not restored
-  after a conversion, and content larger than 8 MB is left behind rather than
-  copied aside.
+- **Clipboard formats other than text, rich text, images and file lists** are
+  not restored after a conversion, and content larger than 8 MB is left behind
+  rather than copied aside.
 
 ## Project layout
 
@@ -161,4 +170,9 @@ and the trust model of the update button. It is the place to start for a review.
 
 Third-party dependencies: [Fyne](https://fyne.io) for the tray icon and the two
 windows, [golang.design/x/clipboard](https://github.com/golang-design/clipboard)
-for the clipboard, and `golang.org/x/sys` for the Windows system calls.
+for the clipboard on macOS and Linux, and `golang.org/x/sys` for the Windows
+system calls.
+
+`tools/stand` is a Windows test stand: it opens a real console, Windows
+Terminal, an isolated VS Code or Notepad, types a word, converts it and checks
+what the window shows. `go run ./tools/stand -help` lists its options.

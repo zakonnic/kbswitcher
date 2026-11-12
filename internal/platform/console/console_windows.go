@@ -3,6 +3,7 @@ package console
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +33,7 @@ var (
 	ErrNotConsole = errors.New("the focused window is not a console")
 	// ErrAmbiguous means the host has several consoles and none of them can be
 	// told apart, so none is touched.
-	ErrAmbiguous = errors.New("the host has more than one console and none of them can be identified")
+	ErrAmbiguous = errors.New("the console of the focused pane cannot be identified")
 
 	errNoWindow = errors.New("no focused window")
 )
@@ -40,30 +41,36 @@ var (
 const (
 	// maxProcessDepth bounds the walk down the host's process tree.
 	maxProcessDepth = 8
-	// maxCandidates bounds how many processes are tried, because an IDE can
+	// maxCandidates bounds how many processes are tried, because an editor can
 	// have dozens of children and each attempt is a system call.
 	maxCandidates = 64
-	// maxWrappedRows is how far back a wrapped input line is followed.
-	maxWrappedRows = 4
 	// matchRowsAbove is how many rows above the caret must agree before a
 	// console is taken for the pane that has the focus.
 	matchRowsAbove = 3
-	// maxDeleted bounds one burst of backspaces.
-	maxDeleted = 256
+	// maxInput bounds the input line worked on.
+	maxInput = 1024
+	// promptContext is how much of the line before the input is checked to be
+	// still in place after an edit.
+	promptContext = 16
 	// recordsPerWrite keeps one WriteConsoleInput call to a sane size.
 	recordsPerWrite = 512
+	// maxCorrections bounds the attempts to repair an edit the shell did not
+	// apply in full, which a console read by several processes, as WSL's is,
+	// occasionally makes it do.
+	maxCorrections = 2
 
 	// The shell takes the key events at its own pace and redraws its line
-	// asynchronously, so an edit is watched rather than assumed: first until
-	// the input queue is empty, then until the rendered line comes to rest.
-	// A press that changes nothing (a backspace at the prompt) is given up on
-	// after quietTimeout; a change is then confirmed over stableReads polls,
-	// with editTimeout as the overall ceiling.
-	pollDelay    = 6 * time.Millisecond
-	stableReads  = 2
-	quietTimeout = 150 * time.Millisecond
-	drainTimeout = 2 * time.Second
-	editTimeout  = 1500 * time.Millisecond
+	// asynchronously, so every edit is watched rather than assumed. A caret
+	// that has not moved quietTimeout after the shell took the key is taken
+	// to stay where it is.
+	pollDelay    = 2 * time.Millisecond
+	stablePolls  = 3
+	quietTimeout = 60 * time.Millisecond
+	editTimeout  = time.Second
+	xtermLag     = 250 * time.Millisecond
+	xtermLagPoll = 25 * time.Millisecond
+
+	pseudoConsoleClass = "PseudoConsoleWindow"
 )
 
 // attachMu serializes the attachment, which is a property of the process and
@@ -77,15 +84,19 @@ type Session struct {
 	closed bool
 }
 
-// Open borrows the console of the shell behind the focused window. Every
-// failure is a reason to fall back to the clipboard path.
+// Open borrows the console of the shell behind the focused window. It fails
+// with ErrNotConsole when the window is not a terminal, and with another error
+// when it is one that cannot be worked with.
 func Open() (*Session, error) {
 	target, err := foreground()
 	if err != nil {
 		return nil, err
 	}
-	if err := usable(target); err != nil {
-		return nil, err
+	switch target.kind {
+	case NotTerminal:
+		return nil, fmt.Errorf("%w: window class %s", ErrNotConsole, target.class)
+	case Mintty:
+		return nil, errors.New("mintty has no Windows console")
 	}
 
 	processes, err := processTree()
@@ -102,48 +113,75 @@ func Open() (*Session, error) {
 	return session, nil
 }
 
-// usable rejects the windows that are not worth attaching to at all.
-func usable(target window) error {
-	switch target.kind {
-	case Conhost, Cascadia:
-		return nil
-	case Embedded:
-		return fmt.Errorf("%w: %s cannot say whether a terminal pane has the focus", ErrNotConsole, target.class)
-	case Mintty:
-		return fmt.Errorf("%w: mintty has no Windows console", ErrNotConsole)
-	default:
-		return fmt.Errorf("%w: window class %s", ErrNotConsole, target.class)
-	}
-}
-
 // found is one console reachable from the host, named by the first process
 // found attached to it.
 type found struct {
 	pid    uint32
 	window uintptr // the console window, which identifies the console itself
 	title  string
-	// rows are the caret row and the rows above it, right-trimmed.
-	rows []string
+	view
+}
+
+// view is the visible part of a console: its size in cells, the caret within
+// it, and the caret row with the rows above it, right-trimmed.
+type view struct {
+	cols, lines int16
+	caretX      int16
+	caretY      int16
+	rows        []string
 }
 
 func open(target window, candidates []uint32) (*Session, error) {
-	consoles := discover(candidates)
-	switch len(consoles) {
-	case 0:
-		// The window is a terminal, so the clipboard path is not an option even
-		// with no console to attach to: it would cancel or copy the shell's
-		// line. The hotkey does nothing instead.
+	consoles := discover(target, candidates)
+	if len(consoles) == 0 {
+		if target.kind == Chromium {
+			return nil, fmt.Errorf("%w: %s runs no terminal", ErrNotConsole, target.class)
+		}
+		// A terminal still: the clipboard path would cancel or copy the
+		// shell's line, so the hotkey does nothing instead.
 		return nil, fmt.Errorf("nothing under %s owns a console", target.class)
-	case 1:
-		return attach(consoles[0])
+	}
+	console, err := pick(target, consoles)
+	if err != nil {
+		return nil, err
+	}
+	return attach(console)
+}
+
+// pick finds the console of the pane that has the focus.
+func pick(target window, consoles []found) (found, error) {
+	if target.kind == Chromium {
+		// The console is ahead of the terminal that renders it, so a caret
+		// that does not match yet is given a moment to catch up.
+		deadline := time.Now().Add(xtermLag)
+		for {
+			f, err := focused(target.pid, false)
+			if err != nil {
+				return found{}, fmt.Errorf("cannot tell whether a terminal has the focus: %w", err)
+			}
+			if !f.xterm() {
+				return found{}, fmt.Errorf("%w: the focus is on %q", ErrNotConsole, f.class)
+			}
+			console, err := byCaret(f, consoles)
+			if err == nil || !time.Now().Before(deadline) {
+				return console, err
+			}
+			time.Sleep(xtermLagPoll)
+		}
+	}
+	if len(consoles) == 1 {
+		return consoles[0], nil
 	}
 
 	// Several tabs or panes. The pane that has the focus shows the rows of
 	// exactly one console; failing that, the host window carries the title of
 	// the active tab.
-	console, err := byFocusedRows(target, consoles)
+	f, err := focused(target.pid, true)
 	if err == nil {
-		return attach(console)
+		var console found
+		if console, err = byRows(f.rows, consoles); err == nil {
+			return console, nil
+		}
 	}
 	var matching []found
 	for _, console := range consoles {
@@ -152,19 +190,15 @@ func open(target window, candidates []uint32) (*Session, error) {
 		}
 	}
 	if len(matching) != 1 {
-		return nil, fmt.Errorf("%w: %d consoles; %w; %d of them titled %q",
+		return found{}, fmt.Errorf("%w: %d consoles; %w; %d of them titled %q",
 			ErrAmbiguous, len(consoles), err, len(matching), target.title)
 	}
-	return attach(matching[0])
+	return matching[0], nil
 }
 
-// byFocusedRows picks the console whose caret row, and the rows above it,
-// are what the focused pane shows.
-func byFocusedRows(target window, consoles []found) (found, error) {
-	rows, err := focusedRows(target.pid, matchRowsAbove)
-	if err != nil {
-		return found{}, fmt.Errorf("the focused pane cannot be read: %w", err)
-	}
+// byRows picks the console whose caret row, and the rows above it, are what
+// the focused pane shows.
+func byRows(rows []string, consoles []found) (found, error) {
 	var matching []found
 	for _, console := range consoles {
 		if sameRows(console.rows, rows) {
@@ -175,6 +209,40 @@ func byFocusedRows(target window, consoles []found) (found, error) {
 		return found{}, fmt.Errorf("%d of them show the rows of the focused pane", len(matching))
 	}
 	return matching[0], nil
+}
+
+// byCaret picks the console whose grid and caret are those of the focused
+// xterm.js terminal: its text area is one cell on the caret, inside a grid of
+// as many cells as the console has.
+func byCaret(f focus, consoles []found) (found, error) {
+	var matching []found
+	for _, console := range consoles {
+		if onCaret(f, console.view) {
+			matching = append(matching, console)
+		}
+	}
+	if len(matching) != 1 {
+		var seen []string
+		for _, c := range consoles {
+			seen = append(seen, fmt.Sprintf("%dx%d at %d,%d", c.cols, c.lines, c.caretX, c.caretY))
+		}
+		return found{}, fmt.Errorf("%w: %d of %d consoles have their caret where the focused terminal has it "+
+			"(text area %v in grid %v; consoles %v)", ErrAmbiguous, len(matching), len(consoles), f.caret, f.screen, seen)
+	}
+	return matching[0], nil
+}
+
+func onCaret(f focus, v view) bool {
+	if v.cols <= 0 || v.lines <= 0 {
+		return false
+	}
+	cellW := f.screen.width() / float64(v.cols)
+	cellH := f.screen.height() / float64(v.lines)
+	x := float64(f.caret.left - f.screen.left)
+	y := float64(f.caret.top - f.screen.top)
+	return math.Abs(x-float64(v.caretX)*cellW) <= cellW/2 &&
+		math.Abs(y-float64(v.caretY)*cellH) <= cellH/2 &&
+		math.Abs(f.caret.height()-cellH) <= cellH/4
 }
 
 // sameRows reports whether two row lists end in the same text. Whitespace is
@@ -202,8 +270,11 @@ func ink(rows []string) string {
 }
 
 // discover attaches to each candidate in turn and notes the console it lands
-// in, keeping one entry per console.
-func discover(candidates []uint32) []found {
+// in, keeping one entry per console. A console window shows exactly one
+// console; Windows Terminal and the editors run pseudoconsoles, and whatever
+// else runs under them with a console of its own (a language server, say) is
+// left out.
+func discover(target window, candidates []uint32) []found {
 	var consoles []found
 	seen := make(map[uintptr]bool)
 
@@ -221,13 +292,20 @@ func discover(candidates []uint32) []found {
 			continue
 		}
 		handle, _, _ := procGetConsoleWindow.Call()
-		if handle != 0 && !seen[handle] {
+		if handle != 0 && !seen[handle] && hosts(target, handle) {
 			seen[handle] = true
-			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(), rows: caretRows()})
+			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(), view: currentView()})
 		}
 		detach()
 	}
 	return consoles
+}
+
+func hosts(target window, console uintptr) bool {
+	if target.kind == Conhost {
+		return console == uintptr(target.handle)
+	}
+	return windowClass(console) == pseudoConsoleClass
 }
 
 func attach(console found) (*Session, error) {
@@ -299,127 +377,6 @@ func ignoreCtrlC(on bool) {
 
 func detach() { _, _, _ = procFreeConsole.Call() }
 
-// Line returns what the shell shows on the input row up to the caret, prompt
-// included. A line that wrapped is followed back over the full rows above it.
-func (s *Session) Line() (string, error) {
-	info, err := s.screen()
-	if err != nil {
-		return "", err
-	}
-
-	top := info.CursorPosition.Y
-	for top > 0 && info.CursorPosition.Y-top < maxWrappedRows && s.full(top-1, info.Size.X) {
-		top--
-	}
-
-	var b strings.Builder
-	for row := top; row < info.CursorPosition.Y; row++ {
-		b.WriteString(s.read(row, info.Size.X))
-	}
-	b.WriteString(s.read(info.CursorPosition.Y, info.CursorPosition.X))
-	return b.String(), nil
-}
-
-// Delete asks the shell to erase n characters before the caret and reports how
-// many it agreed to erase. A shell stops at its prompt, so the answer is the
-// length of what the user actually typed.
-//
-// The backspaces go one at a time, each waited on through the rendered line
-// rather than the caret, which the shell moves in a batch that lags the redraw.
-// A burst of backspaces that runs past the prompt stalls PSReadLine after the
-// first, so erasing stops as soon as the line no longer shrinks: nothing is
-// ever sent into the prompt but the one press that proves the boundary.
-func (s *Session) Delete(n int) (int, error) {
-	if n <= 0 {
-		return 0, nil
-	}
-	n = min(n, maxDeleted)
-
-	before, err := s.Line()
-	if err != nil {
-		return 0, err
-	}
-	prev := before
-	for range n {
-		if err := s.write(press(nil, vkBack, scanBack, '\b')); err != nil {
-			return 0, err
-		}
-		next := s.awaitStable(prev)
-		removed, added := tailDiff(prev, next)
-		if added > 0 {
-			return 0, errors.New("the shell added text while deleting")
-		}
-		if removed == 0 {
-			break // the shell erases no further; the prompt is reached
-		}
-		prev = next
-	}
-
-	removed, _ := tailDiff(before, prev)
-	return removed, nil
-}
-
-// Type writes text into the input line as if its characters had been pressed,
-// and checks that it arrived. A console read by more than one process, as
-// WSL's is, swallows a key event now and then, so one retry is allowed.
-func (s *Session) Type(text string) error {
-	if text == "" {
-		return nil
-	}
-	before, err := s.Line()
-	if err != nil {
-		return err
-	}
-	if err := s.typeOnce(text); err != nil {
-		return err
-	}
-	after := s.awaitStable(before)
-	if strings.HasSuffix(after, text) {
-		return nil
-	}
-
-	// Erase whatever landed and type once more.
-	if _, added := tailDiff(before, after); added > 0 {
-		if _, err := s.Delete(added); err != nil {
-			return err
-		}
-	}
-	if before, err = s.Line(); err != nil {
-		return err
-	}
-	if err := s.typeOnce(text); err != nil {
-		return err
-	}
-	if after := s.awaitStable(before); !strings.HasSuffix(after, text) {
-		return fmt.Errorf("the console did not accept the text; the line ends %q", after)
-	}
-	return nil
-}
-
-// typeOnce writes the characters of text into the input buffer.
-func (s *Session) typeOnce(text string) error {
-	records := make([]inputRecord, 0, len(text)*2)
-	for _, unit := range windows.StringToUTF16(text) {
-		if unit == 0 {
-			continue
-		}
-		records = press(records, 0, 0, unit)
-	}
-	return s.write(records)
-}
-
-// tailDiff compares two lines by their common prefix: removed is how many
-// trailing runes of before are gone in after, added how many runes after holds
-// beyond the shared prefix. The prompt is the shared prefix, so it drops out.
-func tailDiff(before, after string) (removed, added int) {
-	b, a := []rune(before), []rune(after)
-	i := 0
-	for i < len(b) && i < len(a) && b[i] == a[i] {
-		i++
-	}
-	return len(b) - i, len(a) - i
-}
-
 func (s *Session) screen() (windows.ConsoleScreenBufferInfo, error) {
 	var info windows.ConsoleScreenBufferInfo
 	if err := windows.GetConsoleScreenBufferInfo(s.out, &info); err != nil {
@@ -440,98 +397,51 @@ func (s *Session) pending() uint32 {
 	return n
 }
 
-// drainInput waits for the shell to take every key event written, discarding
-// any it never took so a leftover cannot reach whatever the shell reads next.
-func (s *Session) drainInput() {
-	deadline := time.Now().Add(drainTimeout)
-	for s.pending() > 0 {
-		if !time.Now().Before(deadline) {
-			_, _, _ = procFlushConsoleInputBuffer.Call(uintptr(s.in))
-			return
-		}
-		time.Sleep(pollDelay)
-	}
+// cells reads n cells from a linear offset, across rows.
+func (s *Session) cells(from, n, width int) []rune {
+	return []rune(readCells(s.out, from, n, width))
 }
 
-// awaitStable returns the input line once the shell has finished the edit that
-// changed it away from orig and the redraw has come to rest. It reads the
-// rendered text rather than the caret, which the shell moves in a batch that
-// lags the redraw. A press that changes nothing is given up on after
-// quietTimeout, so a backspace at the prompt leaves the line untouched.
-func (s *Session) awaitStable(orig string) string {
-	s.drainInput()
-
-	start := time.Now()
-	last, stable, changed := orig, 0, false
-	deadline := time.Now().Add(editTimeout)
-	for time.Now().Before(deadline) {
-		now, err := s.Line()
-		if err == nil {
-			switch {
-			case now != last:
-				last, stable = now, 0
-				changed = changed || now != orig
-			case changed:
-				if stable++; stable >= stableReads {
-					return now
-				}
-			}
-		}
-		if !changed && time.Since(start) >= quietTimeout {
-			return orig
-		}
-		time.Sleep(pollDelay)
-	}
-	return last
-}
-
-// full reports whether a row has been written to its last cell, which is what
-// a wrapped line leaves behind.
-func (s *Session) full(row, width int16) bool {
-	text := s.read(row, width)
-	if text == "" {
-		return false
-	}
-	return !strings.HasSuffix(text, " ")
-}
-
-func (s *Session) read(row, width int16) string { return readRow(s.out, row, width) }
-
-func readRow(out windows.Handle, row, width int16) string {
-	if width <= 0 || row < 0 {
+func readCells(out windows.Handle, from, n, width int) string {
+	if n <= 0 || from < 0 || width <= 0 {
 		return ""
 	}
-	buf := make([]uint16, width)
+	buf := make([]uint16, n)
 	var got uint32
-	coord := uint32(uint16(row)) << 16 // COORD{X: 0, Y: row}
+	at := coord(from, width)
 	ret, _, _ := procReadConsoleOutputCharW.Call(uintptr(out),
-		uintptr(unsafe.Pointer(&buf[0])), uintptr(width), uintptr(coord),
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(n), uintptr(at),
 		uintptr(unsafe.Pointer(&got)))
-	if ret == 0 || got == 0 {
+	if ret == 0 {
 		return ""
 	}
 	return windows.UTF16ToString(buf[:got])
 }
 
-// caretRows reads the caret row of the attached console and up to
-// matchRowsAbove rows above it, right-trimmed.
-func caretRows() []string {
+// currentView reads the visible part of the attached console.
+func currentView() view {
 	out, err := openConsoleFile("CONOUT$")
 	if err != nil {
-		return nil
+		return view{}
 	}
 	defer func() { _ = windows.CloseHandle(out) }()
 
 	var info windows.ConsoleScreenBufferInfo
 	if err := windows.GetConsoleScreenBufferInfo(out, &info); err != nil || info.Size.X <= 0 {
-		return nil
+		return view{}
 	}
+	v := view{
+		cols:   info.Window.Right - info.Window.Left + 1,
+		lines:  info.Window.Bottom - info.Window.Top + 1,
+		caretX: info.CursorPosition.X - info.Window.Left,
+		caretY: info.CursorPosition.Y - info.Window.Top,
+	}
+	width := int(info.Size.X)
 	first := max(info.CursorPosition.Y-matchRowsAbove, 0)
-	rows := make([]string, 0, info.CursorPosition.Y-first+1)
 	for row := first; row <= info.CursorPosition.Y; row++ {
-		rows = append(rows, strings.TrimRight(readRow(out, row, info.Size.X), " "))
+		v.rows = append(v.rows, strings.TrimRight(readCells(out, int(row)*width, width, width), " "))
 	}
-	return rows
+	return v
 }
 
 func consoleTitle() string {
@@ -540,52 +450,5 @@ func consoleTitle() string {
 	return windows.UTF16ToString(buf[:n])
 }
 
-// Virtual key and scan code of Backspace; every other key this package sends
-// carries a character and no key code at all.
-const (
-	vkBack   = 0x08
-	scanBack = 0x0E
-)
-
-// keyEventRecord mirrors KEY_EVENT_RECORD.
-type keyEventRecord struct {
-	keyDown         int32
-	repeatCount     uint16
-	virtualKeyCode  uint16
-	virtualScanCode uint16
-	unicodeChar     uint16
-	controlKeyState uint32
-}
-
-// inputRecord mirrors INPUT_RECORD holding a key event.
-type inputRecord struct {
-	eventType uint16
-	_         uint16
-	event     keyEventRecord
-}
-
-const keyEvent = 0x0001
-
-func press(records []inputRecord, vk, scan, char uint16) []inputRecord {
-	down := inputRecord{eventType: keyEvent, event: keyEventRecord{
-		keyDown: 1, repeatCount: 1, virtualKeyCode: vk,
-		virtualScanCode: scan, unicodeChar: char}}
-	up := down
-	up.event.keyDown = 0
-	return append(records, down, up)
-}
-
-func (s *Session) write(records []inputRecord) error {
-	for len(records) > 0 {
-		batch := records[:min(len(records), recordsPerWrite)]
-		var written uint32
-		ret, _, err := procWriteConsoleInputW.Call(uintptr(s.in),
-			uintptr(unsafe.Pointer(&batch[0])), uintptr(len(batch)),
-			uintptr(unsafe.Pointer(&written)))
-		if ret == 0 || int(written) != len(batch) {
-			return fmt.Errorf("the console accepted %d of %d key events: %w", written, len(batch), err)
-		}
-		records = records[len(batch):]
-	}
-	return nil
-}
+// Key codes of the keys this package presses; typed characters carry no key
+// code at all.

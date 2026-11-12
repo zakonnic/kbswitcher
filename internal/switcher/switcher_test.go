@@ -41,6 +41,15 @@ func (c *fakeClipboard) WriteText(_ context.Context, text string) error {
 	return nil
 }
 
+func (c *fakeClipboard) Offer(ctx context.Context, text string) (<-chan struct{}, error) {
+	if err := c.WriteText(ctx, text); err != nil {
+		return nil, err
+	}
+	read := make(chan struct{})
+	close(read)
+	return read, nil
+}
+
 func (c *fakeClipboard) AwaitText(_ context.Context, exclude string) (string, error) {
 	if c.text == "" || c.text == exclude {
 		return "", clip.ErrNoCopy
@@ -151,7 +160,6 @@ func newTestSwitcher(t *testing.T, text string) (*Switcher, *fakeEditor, *fakeCl
 
 	options := DefaultOptions()
 	options.KeyDelay = 0
-	options.PasteSettle = 0
 
 	deps := Deps{Layouts: provider, Keyboard: editor, Clipboard: clipboard}
 	s, err := New(layouts, deps, options, slog.New(slog.NewTextHandler(io.Discard, nil)))

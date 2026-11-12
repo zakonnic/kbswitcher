@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/zakonnic/kbswitcher/internal/keymap"
 	"github.com/zakonnic/kbswitcher/internal/platform/clip"
+	"github.com/zakonnic/kbswitcher/internal/platform/console"
 )
 
 // Keyboard replays the shortcuts that select, copy and paste text in the
@@ -41,6 +43,9 @@ type Clipboard interface {
 	Snapshot(ctx context.Context) clip.Snapshot
 	Restore(ctx context.Context, snapshot clip.Snapshot) error
 	WriteText(ctx context.Context, text string) error
+	// Offer puts text on the clipboard for a paste. The channel is closed once
+	// the application has read it.
+	Offer(ctx context.Context, text string) (<-chan struct{}, error)
 	AwaitText(ctx context.Context, exclude string) (string, error)
 }
 
@@ -60,13 +65,9 @@ var ErrNoConsole = errors.New("the focused window has no console")
 
 // Console is one borrowed console, held for the length of a conversion.
 type Console interface {
-	// Line returns the input row up to the caret, prompt included.
-	Line() (string, error)
-	// Delete asks the shell to erase n characters before the caret and reports
-	// how many it agreed to erase; a shell never erases its own prompt.
-	Delete(n int) (int, error)
-	// Type writes text into the input line.
-	Type(text string) error
+	// Edit shows change the shell's input line, whole or up to the caret,
+	// and has the shell replace the characters from..to with text.
+	Edit(whole bool, change func(line console.Line) (from, to int, text string)) error
 	Close() error
 }
 
@@ -90,11 +91,12 @@ var (
 // Options are the timings and limits of a conversion. They exist so that tests
 // run without waiting and a slow remote desktop can be accommodated.
 type Options struct {
-	// KeyDelay is the pause between two bursts of synthetic key presses.
+	// KeyDelay is a pause after each burst of synthetic key presses, for
+	// applications that fall behind their input queue.
 	KeyDelay time.Duration
-	// PasteSettle is how long the converted text stays on the clipboard after
-	// the paste, before the previous content is restored.
-	PasteSettle time.Duration
+	// PasteTimeout bounds the wait for the application to read the pasted
+	// text before the previous clipboard content is restored anyway.
+	PasteTimeout time.Duration
 	// WordSelections are the "select the previous word" presses sent in
 	// successive rounds. Applications stop at punctuation, which may be a
 	// letter in another layout (";bpym" is "жизнь", "j,]`v" is "объём"), so
@@ -108,11 +110,13 @@ type Options struct {
 	MaxNarrowedChars int
 }
 
-// DefaultOptions returns the timings used in production.
+// DefaultOptions returns the timings used in production. Key presses go
+// through the application's input queue in order, so no pause is needed
+// between them.
 func DefaultOptions() Options {
 	return Options{
-		KeyDelay:         30 * time.Millisecond,
-		PasteSettle:      150 * time.Millisecond,
+		KeyDelay:         0,
+		PasteTimeout:     time.Second,
 		WordSelections:   []int{2, 6, 8},
 		MaxNarrowedChars: 120,
 	}
@@ -178,33 +182,48 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	}
 	defer s.busy.Unlock()
 
-	layout, err := s.rewrite(ctx, lastWordOnly)
+	console, err := s.console()
 	if err != nil {
 		return err
 	}
-	if lastWordOnly && s.switchLayout.Load() {
-		s.activate(layout)
-	}
-	return nil
-}
-
-// rewrite replaces the text, through the console behind the focused window
-// when there is one and through the clipboard otherwise, and reports the
-// layout the text was rewritten for.
-func (s *Switcher) rewrite(ctx context.Context, lastWordOnly bool) (*keymap.Layout, error) {
-	console, err := s.console()
-	if err != nil {
-		return nil, err
-	}
+	var target *keymap.Layout
 	if console != nil {
 		defer func() {
 			if err := console.Close(); err != nil {
 				s.log.Warn("could not release the console", "error", err)
 			}
 		}()
-		return s.convertInConsole(console, lastWordOnly)
+		target, err = s.convertInConsole(console, lastWordOnly)
+	} else {
+		// The clipboard goes back to the user whatever happens, even after the
+		// conversion timed out, but only once the layout has been switched:
+		// the user is typing again by then.
+		snapshot := s.deps.Clipboard.Snapshot(ctx)
+		var pasted <-chan struct{}
+		defer s.restore(ctx, snapshot, &pasted)
+		target, err = s.convertByClipboard(ctx, lastWordOnly, &pasted)
 	}
-	return s.convertByClipboard(ctx, lastWordOnly)
+	if err != nil {
+		return err
+	}
+	if lastWordOnly && s.switchLayout.Load() {
+		s.activate(target)
+	}
+	return nil
+}
+
+// restore gives the clipboard back once the application has read the paste.
+func (s *Switcher) restore(ctx context.Context, snapshot clip.Snapshot, pasted *<-chan struct{}) {
+	if *pasted != nil {
+		select {
+		case <-*pasted:
+		case <-time.After(s.options.PasteTimeout):
+			s.log.Debug("the application did not read the paste in time")
+		}
+	}
+	if err := s.deps.Clipboard.Restore(context.WithoutCancel(ctx), snapshot); err != nil {
+		s.log.Warn("could not restore the clipboard", "error", err)
+	}
 }
 
 // activate switches the focused window to a layout. The text is already fixed,
@@ -244,71 +263,45 @@ func (s *Switcher) console() (Console, error) {
 	}
 }
 
-// convertInConsole rewrites the shell's input line in place. How much the
-// shell agrees to erase is what bounds the conversion: a prompt refuses, so a
-// hotkey pressed on an empty line changes nothing.
-func (s *Switcher) convertInConsole(console Console, lastWordOnly bool) (*keymap.Layout, error) {
-	line, err := console.Line()
-	if err != nil {
-		return nil, err
-	}
-
-	// Without a word to isolate, everything the shell lets go of is converted,
-	// which is the whole command the user typed.
-	typed := line
-	if lastWordOnly {
-		_, word, tail := keymap.SplitLastWord(line)
-		typed = word + tail
-	}
-	if typed == "" {
-		return nil, ErrNothingToConvert
-	}
-
-	erased, err := console.Delete(utf8.RuneCountInString(typed))
-	if err != nil {
-		return nil, err
-	}
-	if erased == 0 {
-		return nil, ErrNothingToConvert
-	}
-
-	word := lastRunes(typed, erased)
-	source, target := s.pickLayouts(word)
-	converted := keymap.Convert(word, s.layouts[source], s.layouts[target])
-	s.log.Debug("converting in a console",
-		"from", s.layouts[source].ID(), "to", s.layouts[target].ID(),
-		"characters", erased)
-
-	if err := console.Type(converted); err != nil {
-		if undo := console.Type(word); undo != nil {
-			s.log.Error("the erased text could not be put back", "error", undo)
+// convertInConsole rewrites the shell's input line in place: the last word
+// before the caret, or else the text the shell shows as selected, or the
+// whole line when it shows none (a selection made with the mouse belongs to
+// the terminal, and no shell knows of it).
+func (s *Switcher) convertInConsole(terminal Console, lastWordOnly bool) (*keymap.Layout, error) {
+	var target *keymap.Layout
+	err := terminal.Edit(!lastWordOnly, func(line console.Line) (int, int, string) {
+		text := []rune(line.Text)
+		from, to := 0, len(text)
+		switch {
+		case lastWordOnly:
+			to = min(max(line.Caret, 0), len(text))
+			head, _, _ := keymap.SplitLastWord(string(text[:to]))
+			from = utf8.RuneCountInString(head)
+		case line.SelStart < line.SelEnd && line.SelEnd <= len(text):
+			from, to = max(line.SelStart, 0), line.SelEnd
 		}
+		typed := string(text[from:to])
+		if strings.TrimSpace(typed) == "" {
+			return 0, 0, ""
+		}
+		source, next := s.pickLayouts(typed)
+		target = s.layouts[next]
+		s.log.Debug("converting in a console",
+			"from", s.layouts[source].ID(), "to", target.ID(), "characters", to-from)
+		return from, to, keymap.Convert(typed, s.layouts[source], target)
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.layouts[target], nil
-}
-
-// lastRunes returns the last n runes of text.
-func lastRunes(text string, n int) string {
-	runes := []rune(text)
-	if n >= len(runes) {
-		return text
+	if target == nil {
+		return nil, ErrNothingToConvert
 	}
-	return string(runes[len(runes)-n:])
+	return target, nil
 }
 
 // convertByClipboard is the path for ordinary applications: select, copy,
 // convert, paste, exactly as a user would by hand.
-func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) (*keymap.Layout, error) {
-	// The clipboard goes back to the user whatever happens, even after the
-	// conversion timed out.
-	snapshot := s.deps.Clipboard.Snapshot(ctx)
-	defer func() {
-		if err := s.deps.Clipboard.Restore(context.WithoutCancel(ctx), snapshot); err != nil {
-			s.log.Warn("could not restore the clipboard", "error", err)
-		}
-	}()
-
+func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool, pasted *<-chan struct{}) (*keymap.Layout, error) {
 	selected, err := s.readText(ctx, lastWordOnly)
 	if err != nil {
 		return nil, err
@@ -330,7 +323,7 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool) (*
 		"from", s.layouts[source].ID(), "to", s.layouts[target].ID(),
 		"characters", utf8.RuneCountInString(word))
 
-	if err := s.replace(ctx, head, converted+tail, utf8.RuneCountInString(word+tail)); err != nil {
+	if err := s.replace(ctx, head, converted+tail, utf8.RuneCountInString(word+tail), pasted); err != nil {
 		return nil, err
 	}
 	return s.layouts[target], nil
@@ -394,13 +387,12 @@ func (s *Switcher) copySelection(ctx context.Context) (string, error) {
 // replace writes the converted text over the selection. When only the tail of
 // the selection changed, the selection is first narrowed down to it, so that
 // the formatting of the rest survives in rich text editors.
-func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, replacementChars int) error {
+func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, replacementChars int, pasted *<-chan struct{}) error {
 	narrow := unchanged != "" && replacementChars > 0 && replacementChars <= s.options.MaxNarrowedChars
 	if narrow {
 		if err := s.deps.Keyboard.CollapseSelectionRight(); err != nil {
 			return err
 		}
-		s.pause()
 		if err := s.deps.Keyboard.SelectCharsLeft(replacementChars); err != nil {
 			return err
 		}
@@ -409,14 +401,14 @@ func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, r
 		replacement = unchanged + replacement
 	}
 
-	if err := s.deps.Clipboard.WriteText(ctx, replacement); err != nil {
+	read, err := s.deps.Clipboard.Offer(ctx, replacement)
+	if err != nil {
 		return err
 	}
-	s.pause()
 	if err := s.deps.Keyboard.Paste(); err != nil {
 		return err
 	}
-	s.settle()
+	*pasted = read
 	return nil
 }
 
@@ -436,9 +428,11 @@ func (s *Switcher) indexOf(id string) int {
 	return -1
 }
 
-func (s *Switcher) pause() { time.Sleep(s.options.KeyDelay) }
-
-func (s *Switcher) settle() { time.Sleep(s.options.PasteSettle) }
+func (s *Switcher) pause() {
+	if s.options.KeyDelay > 0 {
+		time.Sleep(s.options.KeyDelay)
+	}
+}
 
 // zeroWidthSpace makes an accidental paste of the marker show nothing.
 const zeroWidthSpace = "\u200b"

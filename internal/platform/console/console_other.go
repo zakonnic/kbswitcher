@@ -14,7 +14,8 @@ type Session struct{}
 // Open always fails away from Windows.
 func Open() (*Session, error) { return nil, ErrNotConsole }
 
-func (s *Session) Line() (string, error)   { return "", ErrNotConsole }
-func (s *Session) Delete(int) (int, error) { return 0, ErrNotConsole }
-func (s *Session) Type(string) error       { return ErrNotConsole }
-func (s *Session) Close() error            { return nil }
+// Edit is never reached on this platform.
+func (s *Session) Edit(bool, func(Line) (int, int, string)) error { return ErrNotConsole }
+
+// Close has nothing to release.
+func (s *Session) Close() error { return nil }

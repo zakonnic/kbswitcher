@@ -5,29 +5,40 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/zakonnic/kbswitcher/internal/keymap"
+	"github.com/zakonnic/kbswitcher/internal/platform/console"
 )
 
 // fakeConsole is a shell showing a prompt and an input line. Like a real one it
-// refuses to erase the prompt, which is what bounds a conversion.
+// hands out only what was typed, never the prompt.
 type fakeConsole struct {
 	prompt string
 	input  string
 	closed bool
+	// caretFromEnd is how many characters lie behind the caret.
+	caretFromEnd int
+	// selected is a part of the input the shell shows as selected.
+	selected string
 }
 
-func (c *fakeConsole) Line() (string, error) { return c.prompt + c.input, nil }
-
-func (c *fakeConsole) Delete(n int) (int, error) {
+func (c *fakeConsole) Edit(whole bool, change func(console.Line) (int, int, string)) error {
 	runes := []rune(c.input)
-	n = min(n, len(runes))
-	c.input = string(runes[:len(runes)-n])
-	return n, nil
+	line := console.Line{Text: c.input, Caret: len(runes) - c.caretFromEnd}
+	if !whole {
+		line.Text = string(runes[:line.Caret])
+	}
+	if c.selected != "" {
+		line.SelStart = utf8.RuneCountInString(c.input[:strings.Index(c.input, c.selected)])
+		line.SelEnd = line.SelStart + utf8.RuneCountInString(c.selected)
+	}
+	from, to, text := change(line)
+	c.input = string(runes[:from]) + text + string(runes[to:])
+	return nil
 }
-
-func (c *fakeConsole) Type(text string) error { c.input += text; return nil }
 
 func (c *fakeConsole) Close() error { c.closed = true; return nil }
 
@@ -51,7 +62,6 @@ func consoleSwitcher(t *testing.T, terminal Terminal, text string) (*Switcher, *
 	editor := newEditor(text, clipboard)
 	options := DefaultOptions()
 	options.KeyDelay = 0
-	options.PasteSettle = 0
 
 	deps := Deps{
 		Layouts:   &fakeLayouts{active: layouts[0].ID()},
@@ -122,6 +132,32 @@ func TestConvertSelectionInAConsoleTakesTheWholeLine(t *testing.T) {
 	}
 	if console.input != "привет слово" {
 		t.Errorf("the input line is %q, want %q", console.input, "привет слово")
+	}
+}
+
+func TestConvertSelectionInAConsoleTakesWhatTheShellSelected(t *testing.T) {
+	// The shell's selection starts at the caret, with the text to convert
+	// behind it.
+	shell := &fakeConsole{input: "echo ghbdtn ckjdj", selected: "ghbdtn", caretFromEnd: len("ghbdtn ckjdj")}
+	s, _, _ := consoleSwitcher(t, &fakeTerminal{console: shell}, "")
+
+	if err := s.ConvertSelection(t.Context()); err != nil {
+		t.Fatalf("ConvertSelection: %v", err)
+	}
+	if shell.input != "echo привет ckjdj" {
+		t.Errorf("the input line is %q, want %q", shell.input, "echo привет ckjdj")
+	}
+}
+
+func TestConvertLastWordInAConsoleStopsAtTheCaret(t *testing.T) {
+	shell := &fakeConsole{input: "ckjdj tail", caretFromEnd: len(" tail")}
+	s, _, _ := consoleSwitcher(t, &fakeTerminal{console: shell}, "")
+
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	if shell.input != "слово tail" {
+		t.Errorf("the input line is %q, want %q", shell.input, "слово tail")
 	}
 }
 

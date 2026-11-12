@@ -25,7 +25,7 @@ const (
 	Conhost          // the classic console window
 	Cascadia         // Windows Terminal
 	Mintty           // Git Bash, which has no Windows console at all
-	Embedded         // an editor or IDE that may or may not have a terminal focused
+	Chromium         // an Electron or Chromium window, which may host an xterm.js terminal
 )
 
 // window is the foreground window and what could be learned about it cheaply.
@@ -44,8 +44,8 @@ func foreground() (window, error) {
 	}
 	w := window{
 		handle: windows.HWND(handle),
-		class:  className(windows.HWND(handle)),
-		title:  windowText(windows.HWND(handle)),
+		class:  windowClass(handle),
+		title:  windowText(handle),
 	}
 	w.pid = processOf(w.handle)
 	w.kind = classify(w.class)
@@ -60,24 +60,26 @@ func classify(class string) Kind {
 		return Cascadia
 	case "mintty":
 		return Mintty
-	// Chromium hosts VS Code, Swing hosts the JetBrains IDEs; both may have a
-	// terminal pane and an editor pane, and only the focus tells them apart.
-	case "Chrome_WidgetWin_1", "SunAwtFrame":
-		return Embedded
+	// VS Code and every other Electron application; a browser too, which
+	// is told apart by owning no console.
+	case "Chrome_WidgetWin_1":
+		return Chromium
 	default:
+		// The JetBrains IDEs (SunAwtFrame) included: they expose nothing that
+		// tells their terminal pane from their editor.
 		return NotTerminal
 	}
 }
 
-func className(hwnd windows.HWND) string {
+func windowClass(hwnd uintptr) string {
 	var buf [256]uint16
-	n, _, _ := procGetClassNameW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	n, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	return windows.UTF16ToString(buf[:n])
 }
 
-func windowText(hwnd windows.HWND) string {
+func windowText(hwnd uintptr) string {
 	var buf [512]uint16
-	n, _, _ := procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	return windows.UTF16ToString(buf[:n])
 }
 
