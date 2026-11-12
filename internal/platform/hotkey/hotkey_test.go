@@ -92,3 +92,11 @@ func TestSupportedKeys(t *testing.T) {
 		t.Errorf("Modifiers() offers Shift: %v", Modifiers())
 	}
 }
+
+func TestKeysNamedByScanCodeCanBeBound(t *testing.T) {
+	for code := range 0x200 {
+		if name, ok := KeyForScanCode(code); ok && !Supported(name) {
+			t.Errorf("scan code %#x names %q, which cannot be bound", code, name)
+		}
+	}
+}

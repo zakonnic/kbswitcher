@@ -38,6 +38,9 @@ type App struct {
 	switcher  *switcher.Switcher
 	ui        *ui.App
 
+	// suspended is set while the settings window listens for a new hotkey.
+	suspended bool
+
 	// warnings are the start-up problems shown to the user in About.
 	warnings []string
 }
@@ -77,6 +80,7 @@ func New(log *slog.Logger) (*App, error) {
 		Layouts:  a.switcher.Layouts(),
 		Config:   a.config,
 		Apply:    a.Apply,
+		Suspend:  a.suspendHotkeys,
 		Warnings: a.warnings,
 	})
 	return a, nil
@@ -133,6 +137,25 @@ func (a *App) Apply(cfg config.Config) error {
 	a.log.Info("settings applied", "hotkey", cfg.Hotkey.Key, "autostart", cfg.Autostart,
 		"switch_layout", cfg.SwitchLayout)
 	return nil
+}
+
+// suspendHotkeys releases the bound combinations so that their keys reach the
+// settings window, and binds them again when it is done.
+func (a *App) suspendHotkeys(suspend bool) {
+	if suspend == a.suspended {
+		return
+	}
+	if !suspend {
+		a.restoreHotkeys()
+		return
+	}
+	if a.hotkeys != nil {
+		if err := a.hotkeys.Close(); err != nil {
+			a.log.Warn("could not release the hotkeys", "error", err)
+		}
+		a.hotkeys = nil
+	}
+	a.suspended = true
 }
 
 func (a *App) restoreHotkeys() {
@@ -248,7 +271,7 @@ func (a *App) bindHotkeys(cfg config.Config) error {
 		return err
 	}
 
-	a.hotkeys = manager
+	a.hotkeys, a.suspended = manager, false
 	a.log.Info("hotkeys bound", "word", combo.String(), "selection", selection.String())
 	return nil
 }

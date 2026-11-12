@@ -139,3 +139,7 @@ func charsFromNative(native *C.kbs_layout) keymap.Chars {
 	}
 	return chars
 }
+
+// Locale is only known for Windows layouts; identifiers here already read as
+// names.
+func Locale(string) (string, bool) { return "", false }

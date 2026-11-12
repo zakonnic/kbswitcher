@@ -19,82 +19,58 @@ const (
 	colorNameSecondary     fyne.ThemeColorName = "secondary"
 	colorNameTrackOff      fyne.ThemeColorName = "trackOff"
 	colorNameKnob          fyne.ThemeColorName = "knob"
+	colorNameFrame         fyne.ThemeColorName = "frame"
 )
 
-var (
-	lightColors = map[fyne.ThemeColorName]color.Color{
-		theme.ColorNameBackground:        rgba(0xEC, 0xEC, 0xEC, 0xFF),
-		theme.ColorNameForeground:        rgba(0x00, 0x00, 0x00, 0xD9),
-		theme.ColorNamePrimary:           rgba(0x00, 0x7A, 0xFF, 0xFF),
-		theme.ColorNameMenuBackground:    rgba(0xFF, 0xFF, 0xFF, 0xFF),
-		theme.ColorNameOverlayBackground: rgba(0xFF, 0xFF, 0xFF, 0xFF),
-		theme.ColorNameInputBackground:   rgba(0xFF, 0xFF, 0xFF, 0xFF),
-		theme.ColorNameHover:             rgba(0x00, 0x00, 0x00, 0x0F),
-		theme.ColorNamePressed:           rgba(0x00, 0x00, 0x00, 0x1A),
-		theme.ColorNameSeparator:         rgba(0x00, 0x00, 0x00, 0x1A),
-		theme.ColorNameShadow:            rgba(0x00, 0x00, 0x00, 0x33),
-		theme.ColorNameScrollBar:         rgba(0x00, 0x00, 0x00, 0x4D),
-		theme.ColorNameFocus:             rgba(0x00, 0x7A, 0xFF, 0x66),
-		theme.ColorNameSelection:         rgba(0x00, 0x7A, 0xFF, 0x40),
-		theme.ColorNameDisabled:          rgba(0x00, 0x00, 0x00, 0x40),
-		colorNameCard:                    rgba(0xFF, 0xFF, 0xFF, 0xFF),
-		colorNameHairline:                rgba(0x00, 0x00, 0x00, 0x1A),
-		colorNameControl:                 rgba(0xFF, 0xFF, 0xFF, 0xFF),
-		colorNameControlBorder:           rgba(0x00, 0x00, 0x00, 0x33),
-		colorNameSecondary:               rgba(0x00, 0x00, 0x00, 0x80),
-		colorNameTrackOff:                rgba(0xE1, 0xE1, 0xE6, 0xFF),
-		colorNameKnob:                    rgba(0xFF, 0xFF, 0xFF, 0xFF),
-	}
-	darkColors = map[fyne.ThemeColorName]color.Color{
-		theme.ColorNameBackground:        rgba(0x1E, 0x1E, 0x1E, 0xFF),
-		theme.ColorNameForeground:        rgba(0xFF, 0xFF, 0xFF, 0xE6),
-		theme.ColorNamePrimary:           rgba(0x0A, 0x84, 0xFF, 0xFF),
-		theme.ColorNameMenuBackground:    rgba(0x2C, 0x2C, 0x2E, 0xFF),
-		theme.ColorNameOverlayBackground: rgba(0x2C, 0x2C, 0x2E, 0xFF),
-		theme.ColorNameInputBackground:   rgba(0x1C, 0x1C, 0x1E, 0xFF),
-		theme.ColorNameHover:             rgba(0xFF, 0xFF, 0xFF, 0x14),
-		theme.ColorNamePressed:           rgba(0xFF, 0xFF, 0xFF, 0x26),
-		theme.ColorNameSeparator:         rgba(0xFF, 0xFF, 0xFF, 0x1F),
-		theme.ColorNameShadow:            rgba(0x00, 0x00, 0x00, 0x80),
-		theme.ColorNameScrollBar:         rgba(0xFF, 0xFF, 0xFF, 0x4D),
-		theme.ColorNameFocus:             rgba(0x0A, 0x84, 0xFF, 0x66),
-		theme.ColorNameSelection:         rgba(0x0A, 0x84, 0xFF, 0x40),
-		theme.ColorNameDisabled:          rgba(0xFF, 0xFF, 0xFF, 0x4D),
-		colorNameCard:                    rgba(0x2C, 0x2C, 0x2E, 0xFF),
-		colorNameHairline:                rgba(0xFF, 0xFF, 0xFF, 0x1F),
-		colorNameControl:                 rgba(0x63, 0x63, 0x66, 0xFF),
-		colorNameControlBorder:           rgba(0xFF, 0xFF, 0xFF, 0x26),
-		colorNameSecondary:               rgba(0xFF, 0xFF, 0xFF, 0x8C),
-		colorNameTrackOff:                rgba(0x4A, 0x4A, 0x4E, 0xFF),
-		colorNameKnob:                    rgba(0xF2, 0xF2, 0xF2, 0xFF),
-	}
-)
+// colors is the one palette of the application: light text on a dark window.
+var colors = map[fyne.ThemeColorName]color.Color{
+	theme.ColorNameBackground:        rgba(0x10, 0x13, 0x1B, 0xFF),
+	theme.ColorNameForeground:        rgba(0xFF, 0xFF, 0xFF, 0xEB),
+	theme.ColorNamePrimary:           rgba(0x0A, 0x84, 0xFF, 0xFF),
+	theme.ColorNameHyperlink:         rgba(0x8A, 0xB4, 0xFF, 0xFF),
+	theme.ColorNameMenuBackground:    rgba(0x1C, 0x20, 0x30, 0xFF),
+	theme.ColorNameOverlayBackground: rgba(0x1C, 0x20, 0x30, 0xFF),
+	theme.ColorNameInputBackground:   rgba(0xFF, 0xFF, 0xFF, 0x0F),
+	theme.ColorNameHover:             rgba(0xFF, 0xFF, 0xFF, 0x14),
+	theme.ColorNamePressed:           rgba(0xFF, 0xFF, 0xFF, 0x26),
+	theme.ColorNameSeparator:         rgba(0xFF, 0xFF, 0xFF, 0x14),
+	theme.ColorNameShadow:            rgba(0x00, 0x00, 0x00, 0x80),
+	theme.ColorNameScrollBar:         rgba(0xFF, 0xFF, 0xFF, 0x4D),
+	theme.ColorNameFocus:             rgba(0x0A, 0x84, 0xFF, 0x66),
+	theme.ColorNameSelection:         rgba(0x0A, 0x84, 0xFF, 0x40),
+	theme.ColorNameDisabled:          rgba(0xFF, 0xFF, 0xFF, 0x4D),
+	colorNameCard:                    rgba(0xFF, 0xFF, 0xFF, 0x0D),
+	colorNameHairline:                rgba(0xFF, 0xFF, 0xFF, 0x14),
+	colorNameControl:                 rgba(0xFF, 0xFF, 0xFF, 0x1A),
+	colorNameControlBorder:           rgba(0xFF, 0xFF, 0xFF, 0x24),
+	colorNameSecondary:               rgba(0xFF, 0xFF, 0xFF, 0x94),
+	colorNameTrackOff:                rgba(0xFF, 0xFF, 0xFF, 0x29),
+	colorNameKnob:                    rgba(0xF2, 0xF2, 0xF2, 0xFF),
+	colorNameFrame:                   rgba(0x00, 0x00, 0x00, 0xFF),
+}
 
-// macTheme gives the windows the colors, sizes and font of macOS. The controls
-// themselves are drawn by this package.
-type macTheme struct {
+// appTheme gives the windows their colors, sizes and the host's interface
+// font. The controls themselves are drawn by this package.
+type appTheme struct {
 	fyne.Theme
 	regular, bold fyne.Resource
 }
 
 func newTheme() fyne.Theme {
-	t := &macTheme{Theme: theme.DefaultTheme()}
+	t := &appTheme{Theme: theme.DefaultTheme()}
 	t.regular, t.bold = systemFont()
 	return t
 }
 
-func (t *macTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	palette := lightColors
-	if variant == theme.VariantDark {
-		palette = darkColors
-	}
-	if c, ok := palette[name]; ok {
+// Color ignores the system variant: the windows are dark by design.
+func (t *appTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
+	if c, ok := colors[name]; ok {
 		return c
 	}
-	return t.Theme.Color(name, variant)
+	return t.Theme.Color(name, theme.VariantDark)
 }
 
-func (t *macTheme) Size(name fyne.ThemeSizeName) float32 {
+func (t *appTheme) Size(name fyne.ThemeSizeName) float32 {
 	switch name {
 	case theme.SizeNameText:
 		return 13
@@ -117,7 +93,7 @@ func (t *macTheme) Size(name fyne.ThemeSizeName) float32 {
 	}
 }
 
-func (t *macTheme) Font(style fyne.TextStyle) fyne.Resource {
+func (t *appTheme) Font(style fyne.TextStyle) fyne.Resource {
 	switch {
 	case t.regular == nil || style.Monospace || style.Symbol:
 		return t.Theme.Font(style)

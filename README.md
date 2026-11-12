@@ -92,7 +92,9 @@ Right-click the tray icon:
   in, and a button that checks for a newer release and installs it.
 - **Settings** — three options: whether kbswitcher starts with your session,
   which key (with optional Ctrl, Alt or Cmd/Win) triggers it, and whether
-  converting a word also switches the keyboard layout. Shift is reserved: it is
+  converting a word also switches the keyboard layout. To change the key, click
+  the Hotkey field and press the key; the hotkey is released while the field
+  listens, so the current key can be pressed there too. Shift is reserved: it is
   what turns the hotkey into its "convert the selection" form. Save puts the
   settings in force at once; Cancel discards the changes.
 - **Quit**.

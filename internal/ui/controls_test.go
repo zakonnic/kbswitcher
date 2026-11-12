@@ -4,6 +4,7 @@ import (
 	"slices"
 	"testing"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
 
 	"github.com/zakonnic/kbswitcher/internal/config"
@@ -42,16 +43,21 @@ func TestCheckboxFlipsOnTap(t *testing.T) {
 	}
 }
 
-func TestPopUpButtonReportsANewChoiceOnce(t *testing.T) {
+func TestKeyFieldTakesOnlyBindableKeys(t *testing.T) {
 	newTestApp(t)
+	keys := hotkey.Keys()
 	var reported []string
-	pick := newPopUpButton([]string{"F1", "F2"}, func(s string) { reported = append(reported, s) })
+	field := newKeyField()
+	field.reset(keys[0])
+	field.onChanged = func(key string) { reported = append(reported, key) }
 
-	pick.setSelected("F2")
-	pick.setSelected("F2")
+	field.KeyDown(&fyne.KeyEvent{Name: fyne.KeyA})
+	field.KeyDown(&fyne.KeyEvent{Name: fyne.KeyName(keys[0])}) // already shown
+	field.KeyDown(&fyne.KeyEvent{Name: fyne.KeyName(keys[1])})
 
-	if !slices.Equal(reported, []string{"F2"}) || pick.selected != "F2" {
-		t.Errorf("reported %v, selected %q; want one report of F2", reported, pick.selected)
+	if !slices.Equal(reported, []string{keys[1]}) || field.selected != keys[1] || field.current != keys[0] {
+		t.Errorf("reported %v, selected %q, current %q; want one report of %q over %q",
+			reported, field.selected, field.current, keys[1], keys[0])
 	}
 }
 
@@ -69,5 +75,23 @@ func TestSettingsFormShowsAndReturnsAConfiguration(t *testing.T) {
 	if got.Hotkey.Key != want.Hotkey.Key || !slices.Equal(got.Hotkey.Modifiers, mods) ||
 		got.Autostart != want.Autostart || got.SwitchLayout != want.SwitchLayout {
 		t.Errorf("form returned %+v, want %+v", got, want)
+	}
+}
+
+func TestLayoutBadge(t *testing.T) {
+	tests := []struct {
+		name, locale string
+		known        bool
+		want         string
+	}{
+		{"US", "en-US", true, "EN"},
+		{"Serbian (Latin)", "sr-Latn-RS", true, "SR"},
+		{"English (US)", "builtin.US", false, "EN"},
+		{"Я", "", false, "Я"},
+	}
+	for _, tt := range tests {
+		if got := layoutBadge(tt.name, tt.locale, tt.known); got != tt.want {
+			t.Errorf("layoutBadge(%q, %q, %v) = %q, want %q", tt.name, tt.locale, tt.known, got, tt.want)
+		}
 	}
 }

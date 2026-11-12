@@ -31,6 +31,9 @@ type Options struct {
 	// Apply puts a configuration in force and returns an error the user can
 	// act on.
 	Apply func(config.Config) error
+	// Suspend releases the hotkeys while the settings window waits for a key,
+	// and binds them again when called with false.
+	Suspend func(bool)
 	// Warnings are the start-up problems shown in About.
 	Warnings []string
 }
@@ -45,9 +48,8 @@ type App struct {
 	// goroutine.
 	config config.Config
 
-	settingsWindow fyne.Window
-	settingsForm   *settingsForm
-	aboutWindow    fyne.Window
+	settings *settingsWindow
+	about    *aboutWindow
 
 	// restart is set when the user asked to relaunch after an update.
 	restart bool
@@ -97,16 +99,11 @@ func icon() fyne.Resource {
 	return fyne.NewStaticResource("icon.png", assets.IconPNG)
 }
 
-// hotkeySummary describes what the configured hotkey does.
-func hotkeySummary(cfg config.Config) string {
+// combos are the configured combination and the same plus Shift.
+func combos(cfg config.Config) (word, selection hotkey.Combo, ok bool) {
 	combo, err := cfg.Combo()
 	if err != nil {
-		return "The hotkey is not configured."
+		return hotkey.Combo{}, hotkey.Combo{}, false
 	}
-	word := " converts the last word."
-	if cfg.SwitchLayout {
-		word = " converts the last word and switches the keyboard layout."
-	}
-	return combo.String() + word + "\n" +
-		combo.With(hotkey.ModShift).String() + " converts the selected text."
+	return combo, combo.With(hotkey.ModShift), true
 }

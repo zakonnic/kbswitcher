@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strconv"
 	"sync"
 	"unsafe"
 
@@ -20,6 +21,7 @@ var (
 	procGetKeyboardLayoutName  = user32.NewProc("GetKeyboardLayoutNameW")
 	procMapVirtualKeyEx        = user32.NewProc("MapVirtualKeyExW")
 	procPostMessage            = user32.NewProc("PostMessageW")
+	procLCIDToLocaleName       = windows.NewLazySystemDLL("kernel32.dll").NewProc("LCIDToLocaleName")
 )
 
 const (
@@ -193,6 +195,21 @@ func activateLayout(hkl windows.Handle) error {
 		return fmt.Errorf("ActivateKeyboardLayout: %w", err)
 	}
 	return nil
+}
+
+// Locale names the language of a layout identifier, such as en-US for
+// 00000409, from the language identifier in its low word.
+func Locale(id string) (string, bool) {
+	klid, err := strconv.ParseUint(id, 16, 32)
+	if err != nil {
+		return "", false
+	}
+	var name [85]uint16 // LOCALE_NAME_MAX_LENGTH
+	n, _, _ := procLCIDToLocaleName.Call(uintptr(klid&0xFFFF), uintptr(unsafe.Pointer(&name[0])), uintptr(len(name)), 0)
+	if n <= 1 { // the count includes the terminating NUL
+		return "", false
+	}
+	return windows.UTF16ToString(name[:]), true
 }
 
 // layoutName returns the display name of a layout identifier, or the

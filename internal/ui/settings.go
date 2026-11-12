@@ -7,99 +7,119 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
-	"fyne.io/fyne/v2/widget"
+	"fyne.io/fyne/v2/theme"
 
 	"github.com/zakonnic/kbswitcher/internal/buildinfo"
 	"github.com/zakonnic/kbswitcher/internal/config"
 	"github.com/zakonnic/kbswitcher/internal/platform/hotkey"
 )
 
-var settingsWindowSize = fyne.NewSize(500, 0)
+const (
+	settingsWidth = 520
+	settingsRow   = 42
+)
+
+// settingsWindow is the settings window and the form it edits.
+type settingsWindow struct {
+	*chrome
+	form *settingsForm
+}
 
 // showSettings opens the settings window, or brings it back to the front with
 // the configuration in force.
 func (a *App) showSettings() {
-	if a.settingsWindow != nil {
-		a.settingsForm.reset(a.config)
-		a.settingsWindow.Show()
-		a.settingsWindow.RequestFocus()
-		return
+	if a.settings == nil {
+		a.settings = a.newSettings()
 	}
+	a.settings.form.reset(a.config)
+	a.settings.show()
+}
 
-	window := a.fyne.NewWindow(buildinfo.Name + " — Settings")
-	window.SetCloseIntercept(window.Hide)
-	form := newSettingsForm(a.config)
-	a.settingsWindow, a.settingsForm = window, form
+func (a *App) newSettings() *settingsWindow {
+	w := &settingsWindow{chrome: a.newWindow(buildinfo.Name + " Settings"), form: newSettingsForm(a.config)}
+	form := w.form
+	form.key.onFocus = a.options.Suspend
+	hide := func() {
+		w.window.Canvas().Unfocus()
+		w.window.Hide()
+	}
+	w.window.SetCloseIntercept(hide)
+	w.window.Canvas().SetOnTypedKey(func(e *fyne.KeyEvent) {
+		if e.Name == fyne.KeyEscape {
+			hide()
+		}
+	})
 
 	save := newButton("Save", func() {
 		updated := form.config()
 		if err := updated.Validate(); err != nil {
-			dialog.ShowError(err, window)
+			dialog.ShowError(err, w.window)
 			return
 		}
 		if err := a.options.Apply(updated); err != nil {
 			a.log.Error("could not apply the settings", "error", err)
-			dialog.ShowError(err, window)
+			dialog.ShowError(err, w.window)
 			form.reset(a.config)
 			return
 		}
 		a.config = updated
-		window.Hide()
+		hide()
 	})
 	save.primary = true
-	cancel := newButton("Cancel", window.Hide)
 
-	window.SetContent(container.New(windowPadding(), container.NewVBox(
+	fg := theme.Color(theme.ColorNameForeground)
+	text := theme.Size(theme.SizeNameText)
+	hero := header(0, 12, 16, container.NewBorder(nil, nil,
+		line(10, logoTile(28, 19, 7), label(buildinfo.Name+" Settings", 14, fg, true)),
+		newCloseButton(hide)))
+
+	body := container.New(column{},
 		card(
-			row("Start when I log in", form.autostart),
-			row("Switch the keyboard to the layout of the converted word", form.switchLayout),
+			row(settingsRow, label("Start when I log in", text, fg, false), form.autostart),
+			row(settingsRow, caption("Switch the keyboard layout", "to the layout of the converted word"), form.switchLayout),
 		),
-		gap(0, 8),
+		gap(0, bodyGap),
 		card(
-			row("Hotkey", form.key),
-			row("Modifiers", form.modifiers),
+			row(settingsRow, label("Hotkey", text, fg, false), form.key),
+			row(settingsRow, label("Modifiers", text, fg, false), form.modifiers),
 		),
-		gap(0, 8),
-		form.summary,
-		gap(0, 12),
-		container.NewHBox(layout.NewSpacer(), cancel, gap(6, 0), save),
-	)))
-	window.Resize(settingsWindowSize)
-	window.CenterOnScreen()
-	window.Show()
+		gap(0, 14),
+		container.New(layout.NewCustomPaddedLayout(0, 0, cardPadding, cardPadding), form.preview),
+		gap(0, bodyGap),
+		container.NewBorder(nil, nil, nil, line(8, newButton("Cancel", hide), save)),
+	)
+	w.setContent(headed(hero,
+		container.New(layout.NewCustomPaddedLayout(18, bodyGap, bodyPadding, bodyPadding), body),
+	), settingsWidth)
+	return w
 }
 
 // settingsForm holds the controls of the settings window.
 type settingsForm struct {
 	autostart    *toggle
 	switchLayout *toggle
-	key          *popUpButton
+	key          *keyField
 	checks       []*checkbox // one per hotkey.Modifiers(), in that order
-	modifiers    *fyne.Container
-	summary      *widget.RichText
-	summaryText  *widget.TextSegment
+	modifiers    fyne.CanvasObject
+	preview      *fyne.Container
 }
 
 func newSettingsForm(cfg config.Config) *settingsForm {
 	f := &settingsForm{
 		autostart:    newToggle(nil),
 		switchLayout: newToggle(nil),
-		key:          newPopUpButton(hotkey.Keys(), nil),
-		modifiers:    container.NewHBox(),
-		summaryText:  &widget.TextSegment{Style: widget.RichTextStyle{ColorName: colorNameSecondary}},
+		key:          newKeyField(),
+		preview:      container.New(column{}),
 	}
-	f.summary = widget.NewRichText(f.summaryText)
-	f.summary.Wrapping = fyne.TextWrapWord
-	for i, name := range hotkey.Modifiers() {
-		check := newCheckbox(name, func(bool) { f.preview() })
+	boxes := make([]fyne.CanvasObject, 0, len(hotkey.Modifiers()))
+	for _, name := range hotkey.Modifiers() {
+		check := newCheckbox(name, func(bool) { f.refreshPreview() })
 		f.checks = append(f.checks, check)
-		if i > 0 {
-			f.modifiers.Add(gap(8, 0))
-		}
-		f.modifiers.Add(check)
+		boxes = append(boxes, check)
 	}
-	f.key.onChanged = func(string) { f.preview() }
-	f.switchLayout.onChanged = func(bool) { f.preview() }
+	f.modifiers = line(12, boxes...)
+	f.key.onChanged = func(string) { f.refreshPreview() }
+	f.switchLayout.onChanged = func(bool) { f.refreshPreview() }
 	f.reset(cfg)
 	return f
 }
@@ -131,11 +151,24 @@ func (f *settingsForm) reset(cfg config.Config) {
 	}
 	f.autostart.setOn(cfg.Autostart)
 	f.switchLayout.setOn(cfg.SwitchLayout)
-	f.key.setSelected(cfg.Hotkey.Key)
-	f.preview()
+	f.key.reset(cfg.Hotkey.Key)
+	f.refreshPreview()
 }
 
-func (f *settingsForm) preview() {
-	f.summaryText.Text = hotkeySummary(f.config())
-	f.summary.Refresh()
+// refreshPreview shows what the combinations on screen will do.
+func (f *settingsForm) refreshPreview() {
+	cfg := f.config()
+	secondary := theme.Color(colorNameSecondary)
+	// The form only offers valid modifiers, so the combination always parses.
+	word, selection, _ := combos(cfg)
+	what := "converts the last word"
+	if cfg.SwitchLayout {
+		what = "converts the last word and switches the layout"
+	}
+	f.preview.Objects = []fyne.CanvasObject{
+		line(8, keyCaps(word), label(what, 12, secondary, false)),
+		gap(0, 6),
+		line(8, keyCaps(selection), label("converts the selected text", 12, secondary, false)),
+	}
+	f.preview.Refresh()
 }

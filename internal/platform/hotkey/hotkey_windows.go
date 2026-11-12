@@ -52,6 +52,16 @@ func keyCode(name string) (uint32, bool) {
 	return code, ok
 }
 
+// scanCodes names the keys that GLFW reports by scan code alone.
+var scanCodes = map[int]string{0x45: "Pause", 0x46: "ScrollLock"}
+
+// KeyForScanCode names the bindable key with the scan code GLFW reports, for
+// keys the toolkit has no name for.
+func KeyForScanCode(code int) (string, bool) {
+	name, ok := scanCodes[code]
+	return name, ok
+}
+
 // DefaultKey is the key bound when no configuration exists yet.
 func DefaultKey() string { return "Pause" }
 

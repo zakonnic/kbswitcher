@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"net/url"
 	"runtime"
 	"strings"
@@ -10,91 +11,201 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/zakonnic/kbswitcher/internal/buildinfo"
+	"github.com/zakonnic/kbswitcher/internal/config"
+	"github.com/zakonnic/kbswitcher/internal/keymap"
+	"github.com/zakonnic/kbswitcher/internal/platform/hotkey"
+	"github.com/zakonnic/kbswitcher/internal/platform/layouts"
 	"github.com/zakonnic/kbswitcher/internal/updater"
 )
 
-var aboutWindowSize = fyne.NewSize(560, 480)
+const (
+	aboutWidth = 560
+	aboutRow   = 38
+)
+
+// aboutWindow is the About window. Its hotkey card follows the settings.
+type aboutWindow struct {
+	*chrome
+	hotkeys *fyne.Container
+}
 
 // showAbout opens the About window, or brings it back to the front.
 func (a *App) showAbout() {
-	if a.aboutWindow != nil {
-		a.aboutWindow.Show()
-		a.aboutWindow.RequestFocus()
-		return
+	if a.about == nil {
+		a.about = a.newAbout()
 	}
-
-	window := a.fyne.NewWindow("About " + buildinfo.Name)
-	a.aboutWindow = window
-	window.SetCloseIntercept(window.Hide)
-
-	description := widget.NewRichTextFromMarkdown(a.aboutText())
-	description.Wrapping = fyne.TextWrapWord
-
-	panel := newUpdatePanel(a, window)
-
-	window.SetContent(container.New(windowPadding(), container.NewBorder(
-		nil,
-		container.NewVBox(
-			panel.status,
-			container.NewHBox(layout.NewSpacer(), panel.button, gap(6, 0), newButton("Close", window.Hide)),
-		),
-		nil, nil,
-		container.NewVScroll(card(container.New(
-			layout.NewCustomPaddedLayout(cardPadding, cardPadding, cardPadding, cardPadding),
-			container.NewVBox(description, repositoryLink()),
-		))),
-	)))
-	window.Resize(aboutWindowSize)
-	window.CenterOnScreen()
-	window.Show()
+	a.about.hotkeys.Objects = []fyne.CanvasObject{titledCard("Hotkeys", hotkeyRows(a.config)...)}
+	a.about.hotkeys.Refresh()
+	a.about.show()
 }
 
-// aboutText describes the running application in Markdown.
-func (a *App) aboutText() string {
-	var text strings.Builder
-
-	fmt.Fprintf(&text, "## %s %s\n\n", buildinfo.Name, buildinfo.Version)
-	fmt.Fprintf(&text, "Build %s, %s/%s.\n\n", buildinfo.Commit, runtime.GOOS, runtime.GOARCH)
-	text.WriteString("Rewrites text that was typed with the wrong keyboard layout, " +
-		"as if the same keys had been pressed with the next layout selected.\n\n")
-
-	text.WriteString("### Hotkeys\n\n")
-	for line := range strings.Lines(hotkeySummary(a.config)) {
-		fmt.Fprintf(&text, "- %s\n", strings.TrimSpace(line))
-	}
-
-	text.WriteString("\n### Layouts, in the order they are cycled\n\n")
-	for i, layout := range a.options.Layouts {
-		fmt.Fprintf(&text, "%d. %s — `%s`\n", i+1, layout.Name(), layout.ID())
-	}
-
-	if len(a.options.Warnings) > 0 {
-		text.WriteString("\n### Warnings\n\n")
-		for _, warning := range a.options.Warnings {
-			fmt.Fprintf(&text, "%s\n\n", warning)
+func (a *App) newAbout() *aboutWindow {
+	w := &aboutWindow{chrome: a.newWindow("About " + buildinfo.Name), hotkeys: container.NewStack()}
+	hide := w.window.Hide
+	w.window.SetCloseIntercept(hide)
+	w.window.Canvas().SetOnTypedKey(func(e *fyne.KeyEvent) {
+		if e.Name == fyne.KeyEscape {
+			hide()
 		}
+	})
+
+	title := container.New(column{},
+		label(buildinfo.Name, 26, theme.Color(theme.ColorNameForeground), true),
+		gap(0, 4),
+		label("Fixes text typed in the wrong layout.", 12.5, theme.Color(colorNameSecondary), false),
+		gap(0, 8),
+		container.NewHBox(newChip(versionText(), versionStyle)),
+	)
+	hero := header(150, 24, 26, line(18, logoTile(72, 50, 14), title))
+
+	body := []fyne.CanvasObject{
+		container.New(columns{12}, w.hotkeys, titledCard("Layouts", layoutRows(a.options.Layouts)...)),
 	}
-	return text.String()
+	if len(a.options.Warnings) > 0 {
+		body = append(body, gap(0, 12), titledCard("Warnings", warningRows(a.options.Warnings)...))
+	}
+	panel := newUpdatePanel(a, w.window)
+	done := newButton("Close", hide)
+	done.primary = true
+	footer := container.NewBorder(nil, nil,
+		line(8, panel.status, repositoryLink()),
+		line(8, panel.button, done))
+	body = append(body, gap(0, bodyGap), footer)
+
+	w.setContent(headed(hero,
+		container.New(layout.NewCustomPaddedLayout(18, bodyGap, bodyPadding, bodyPadding), container.New(column{}, body...)),
+	), aboutWidth)
+	return w
+}
+
+// versionText names the commit once even when the version already holds it,
+// as a git describe of an untagged build does.
+func versionText() string {
+	parts := []string{buildinfo.Version}
+	if !strings.Contains(buildinfo.Version, buildinfo.Commit) && buildinfo.Commit != "unknown" {
+		parts = append(parts, buildinfo.Commit)
+	}
+	return strings.Join(append(parts, runtime.GOOS+"/"+runtime.GOARCH), " · ")
+}
+
+// hotkeyRows shows the configured combinations as key caps.
+func hotkeyRows(cfg config.Config) []fyne.CanvasObject {
+	word, selection, ok := combos(cfg)
+	secondary := theme.Color(colorNameSecondary)
+	if !ok {
+		return []fyne.CanvasObject{row(aboutRow, label("The hotkey is not configured.", 12, secondary, false), gap(0, 0))}
+	}
+	what := "last word"
+	if cfg.SwitchLayout {
+		what = "last word + switch"
+	}
+	return []fyne.CanvasObject{
+		row(aboutRow, keyCaps(word), label(what, 11.5, secondary, false)),
+		row(aboutRow, keyCaps(selection), label("selection", 11.5, secondary, false)),
+	}
+}
+
+// keyCaps draws a combination as key caps joined by plus signs.
+func keyCaps(combo hotkey.Combo) fyne.CanvasObject {
+	var caps []fyne.CanvasObject
+	for i, name := range append(combo.Mods.Names(), combo.Key) {
+		if i > 0 {
+			caps = append(caps, label("+", 11, withAlpha(theme.Color(theme.ColorNameForeground), 0.55), false))
+		}
+		caps = append(caps, newChip(name, keycapStyle))
+	}
+	return line(5, caps...)
+}
+
+var badgeColors = []color.Color{
+	rgba(0x34, 0x78, 0xF6, 0xFF), rgba(0xD9, 0x47, 0x3F, 0xFF), rgba(0x2F, 0xA8, 0x5A, 0xFF),
+	rgba(0xE8, 0x8B, 0x1A, 0xFF), rgba(0x8E, 0x5B, 0xD9, 0xFF),
+}
+
+func layoutRows(installed []*keymap.Layout) []fyne.CanvasObject {
+	rows := make([]fyne.CanvasObject, 0, len(installed))
+	for i, l := range installed {
+		code, known := layouts.Locale(l.ID())
+		if !known {
+			code = l.ID()
+		}
+		badge := newChip(layoutBadge(l.Name(), code, known), badgeStyle(badgeColors[i%len(badgeColors)]))
+		rows = append(rows, row(aboutRow,
+			line(8, badge, label(l.Name(), theme.Size(theme.SizeNameText), theme.Color(theme.ColorNameForeground), false)),
+			label(code, 11.5, theme.Color(colorNameSecondary), false)))
+	}
+	return rows
+}
+
+// layoutBadge is the language of a layout in two or three letters: from its
+// locale when known, or else from the start of its name.
+func layoutBadge(name, locale string, known bool) string {
+	if known {
+		language, _, _ := strings.Cut(locale, "-")
+		return strings.ToUpper(language)
+	}
+	letters := []rune(strings.ToUpper(name))
+	return string(letters[:min(2, len(letters))])
+}
+
+func warningRows(warnings []string) []fyne.CanvasObject {
+	rows := make([]fyne.CanvasObject, 0, len(warnings))
+	for _, warning := range warnings {
+		text := widget.NewLabel(warning)
+		text.Wrapping = fyne.TextWrapWord
+		rows = append(rows, container.New(layout.NewCustomPaddedLayout(0, 0, cardPadding-6, cardPadding-6), text))
+	}
+	return rows
 }
 
 func repositoryLink() fyne.CanvasObject {
 	address, err := url.Parse("https://github.com/" + buildinfo.Repository)
 	if err != nil {
-		return widget.NewLabel(buildinfo.Repository)
+		return label(buildinfo.Repository, 12, theme.Color(colorNameSecondary), false)
 	}
-	return widget.NewHyperlink(buildinfo.Repository, address)
+	return newLink("GitHub", address)
 }
 
-// updatePanel is the status line and the button that check for and install a
+// link is a text that opens an address, no taller than the text itself.
+type link struct {
+	widget.BaseWidget
+	text    string
+	address *url.URL
+}
+
+func newLink(text string, address *url.URL) *link {
+	l := &link{text: text, address: address}
+	l.ExtendBaseWidget(l)
+	return l
+}
+
+// Tapped opens the address.
+func (l *link) Tapped(*fyne.PointEvent) {
+	if err := fyne.CurrentApp().OpenURL(l.address); err != nil {
+		fyne.LogError("could not open "+l.address.String(), err)
+	}
+}
+
+// Cursor shows that the text is a link.
+func (l *link) Cursor() desktop.Cursor { return desktop.PointerCursor }
+
+// CreateRenderer draws the text.
+func (l *link) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(label(l.text, 12, theme.Color(theme.ColorNameHyperlink), false))
+}
+
+// updatePanel is the status pill and the button that check for and install a
 // release.
 type updatePanel struct {
 	app    *App
 	window fyne.Window
-	status *widget.Label
+	status *chip
 	button *button
 }
 
@@ -102,24 +213,24 @@ func newUpdatePanel(app *App, window fyne.Window) *updatePanel {
 	p := &updatePanel{
 		app:    app,
 		window: window,
-		status: widget.NewLabel(""),
+		status: newChip("Not checked", pillNeutral),
 		button: newButton("Check for updates", nil),
 	}
-	p.status.Wrapping = fyne.TextWrapWord
-	p.button.primary = true
 	if app.options.Updater == nil {
 		p.button.disable()
-		p.status.SetText("Updates are unavailable; see the warnings above.")
+		p.show("Updates unavailable", pillWarn)
 		return p
 	}
 	p.button.onTapped = p.check
 	return p
 }
 
+func (p *updatePanel) show(text string, style chipStyle) { p.status.set(text, style) }
+
 // check asks for the latest release and offers to install it when it is newer.
 func (p *updatePanel) check() {
 	p.button.disable()
-	p.status.SetText("Looking for a newer release…")
+	p.show("Checking…", pillNeutral)
 	u := p.app.options.Updater
 
 	go func() {
@@ -130,12 +241,12 @@ func (p *updatePanel) check() {
 			switch {
 			case err != nil:
 				p.app.log.Warn("update check failed", "error", err)
-				p.status.SetText("Could not check for updates: " + err.Error())
+				p.show("Check failed", pillWarn)
+				dialog.ShowError(fmt.Errorf("could not check for updates: %w", err), p.window)
 			case !u.IsNewer(release):
-				p.status.SetText(fmt.Sprintf("%s is the latest release; this build is %s.",
-					release.Version, u.Current()))
+				p.show("Up to date", pillOK)
 			default:
-				p.status.SetText(release.Version + " is available.")
+				p.show(release.Version+" available", pillNeutral)
 				p.confirm(release)
 			}
 		})
@@ -154,18 +265,16 @@ func (p *updatePanel) confirm(release updater.Release) {
 	}
 
 	dialog.ShowConfirm("Update available", message, func(confirmed bool) {
-		if !confirmed {
-			p.status.SetText(release.Version + " is available; not installed.")
-			return
+		if confirmed {
+			p.install(release)
 		}
-		p.install(release)
 	}, p.window)
 }
 
 // install downloads and installs a release, then offers to restart.
 func (p *updatePanel) install(release updater.Release) {
 	p.button.disable()
-	p.status.SetText("Downloading " + release.Version + "…")
+	p.show("Downloading…", pillNeutral)
 	u := p.app.options.Updater
 
 	go func() {
@@ -175,12 +284,12 @@ func (p *updatePanel) install(release updater.Release) {
 			p.button.enable()
 			if err != nil {
 				p.app.log.Error("update failed", "version", release.Version, "error", err)
-				p.status.SetText("Update failed: " + err.Error())
+				p.show("Update failed", pillWarn)
 				dialog.ShowError(err, p.window)
 				return
 			}
 			p.app.log.Info("update installed", "version", release.Version, "path", path)
-			p.status.SetText(release.Version + " installed.")
+			p.show(release.Version+" installed", pillOK)
 
 			dialog.ShowConfirm("Restart now?",
 				buildinfo.Name+" has been updated. Restart it now to use "+release.Version+"?",

@@ -39,6 +39,17 @@ func keyCode(name string) (uint32, bool) {
 	return code, ok
 }
 
+// KeyForScanCode names the bindable key with the scan code GLFW reports, for
+// keys the toolkit has no name for. On macOS that code is the virtual key code.
+func KeyForScanCode(code int) (string, bool) {
+	for name, c := range keyCodes {
+		if int(c) == code {
+			return name, true
+		}
+	}
+	return "", false
+}
+
 // DefaultKey is the key bound when no configuration exists yet: Mac keyboards
 // have no Break key, and F12 is the closest thing that is free by default.
 func DefaultKey() string { return "F12" }
