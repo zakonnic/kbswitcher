@@ -86,6 +86,9 @@ var (
 	ErrNothingToConvert = errors.New("nothing to convert")
 	// ErrNotEnoughLayouts means there is nothing to convert between.
 	ErrNotEnoughLayouts = errors.New("at least two keyboard layouts are needed")
+	// ErrNotSelected means the application did not show the word selected
+	// for the paste, so nothing was replaced.
+	ErrNotSelected = errors.New("the application did not select the word to replace; nothing was replaced")
 )
 
 // Options are the timings and limits of a conversion. They exist so that tests
@@ -108,6 +111,10 @@ type Options struct {
 	// it the whole selection is replaced, which costs formatting in rich text
 	// editors but never sends hundreds of key presses.
 	MaxNarrowedChars int
+	// SelectionTimeout bounds the wait for the application to show the
+	// narrowed selection; it is copied again SelectionRecheck apart.
+	SelectionTimeout time.Duration
+	SelectionRecheck time.Duration
 }
 
 // DefaultOptions returns the timings used in production. Key presses go
@@ -119,6 +126,8 @@ func DefaultOptions() Options {
 		PasteTimeout:     time.Second,
 		WordSelections:   []int{2, 6, 8},
 		MaxNarrowedChars: 120,
+		SelectionTimeout: 300 * time.Millisecond,
+		SelectionRecheck: 20 * time.Millisecond,
 	}
 }
 
@@ -138,27 +147,32 @@ type Switcher struct {
 	options Options
 	log     *slog.Logger
 
-	// switchLayout says whether ConvertLastWord also moves the focused window
-	// to the layout the word now belongs to. Settings can change it at any time.
-	switchLayout atomic.Bool
+	// switchAfterWord and switchAfterSelection say whether converting moves
+	// the focused window to the layout the text now belongs to. Settings can
+	// change them at any time.
+	switchAfterWord, switchAfterSelection atomic.Bool
 
 	// busy admits one conversion at a time.
 	busy sync.Mutex
 }
 
 // New builds a switcher over the layouts read at start-up. It switches the
-// layout after a word until SetSwitchLayout says otherwise.
+// layout after converting until SetSwitchLayout says otherwise.
 func New(layouts []*keymap.Layout, deps Deps, options Options, log *slog.Logger) (*Switcher, error) {
 	if len(layouts) < 2 {
 		return nil, ErrNotEnoughLayouts
 	}
 	s := &Switcher{layouts: layouts, deps: deps, options: options, log: log}
-	s.switchLayout.Store(true)
+	s.SetSwitchLayout(true, true)
 	return s, nil
 }
 
-// SetSwitchLayout turns the layout switch after ConvertLastWord on or off.
-func (s *Switcher) SetSwitchLayout(on bool) { s.switchLayout.Store(on) }
+// SetSwitchLayout turns the layout switch after ConvertLastWord and after
+// ConvertSelection on or off.
+func (s *Switcher) SetSwitchLayout(afterWord, afterSelection bool) {
+	s.switchAfterWord.Store(afterWord)
+	s.switchAfterSelection.Store(afterSelection)
+}
 
 // Layouts returns the layouts the switcher cycles through, in order.
 func (s *Switcher) Layouts() []*keymap.Layout { return s.layouts }
@@ -171,7 +185,8 @@ func (s *Switcher) ConvertLastWord(ctx context.Context) error {
 }
 
 // ConvertSelection rewrites the selected text as if it had been typed in the
-// next layout. The layout of the focused window is left alone.
+// next layout and, unless that is turned off, switches the focused window to
+// that layout.
 func (s *Switcher) ConvertSelection(ctx context.Context) error {
 	return s.convert(ctx, false)
 }
@@ -206,10 +221,17 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	if err != nil {
 		return err
 	}
-	if lastWordOnly && s.switchLayout.Load() {
+	if s.switchAfter(lastWordOnly) {
 		s.activate(target)
 	}
 	return nil
+}
+
+func (s *Switcher) switchAfter(lastWordOnly bool) bool {
+	if lastWordOnly {
+		return s.switchAfterWord.Load()
+	}
+	return s.switchAfterSelection.Load()
 }
 
 // restore gives the clipboard back once the application has read the paste.
@@ -323,7 +345,7 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly bool, pa
 		"from", s.layouts[source].ID(), "to", s.layouts[target].ID(),
 		"characters", utf8.RuneCountInString(word))
 
-	if err := s.replace(ctx, head, converted+tail, utf8.RuneCountInString(word+tail), pasted); err != nil {
+	if err := s.replace(ctx, head, word+tail, converted+tail, pasted); err != nil {
 		return nil, err
 	}
 	return s.layouts[target], nil
@@ -384,19 +406,15 @@ func (s *Switcher) copySelection(ctx context.Context) (string, error) {
 	return text, nil
 }
 
-// replace writes the converted text over the selection. When only the tail of
-// the selection changed, the selection is first narrowed down to it, so that
-// the formatting of the rest survives in rich text editors.
-func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, replacementChars int, pasted *<-chan struct{}) error {
-	narrow := unchanged != "" && replacementChars > 0 && replacementChars <= s.options.MaxNarrowedChars
-	if narrow {
-		if err := s.deps.Keyboard.CollapseSelectionRight(); err != nil {
+// replace writes replacement over original, the end of the selection. When
+// unchanged text comes before it, the selection is narrowed down to original
+// first, which keeps the formatting of the rest in rich text editors.
+func (s *Switcher) replace(ctx context.Context, unchanged, original, replacement string, pasted *<-chan struct{}) error {
+	steps := utf8.RuneCountInString(lineBreaks.Replace(original))
+	if unchanged != "" && steps <= s.options.MaxNarrowedChars {
+		if err := s.narrow(ctx, original, steps); err != nil {
 			return err
 		}
-		if err := s.deps.Keyboard.SelectCharsLeft(replacementChars); err != nil {
-			return err
-		}
-		s.pause()
 	} else {
 		replacement = unchanged + replacement
 	}
@@ -410,6 +428,42 @@ func (s *Switcher) replace(ctx context.Context, unchanged, replacement string, r
 	}
 	*pasted = read
 	return nil
+}
+
+// lineBreaks counts a CR LF pair as the one caret step it is.
+var lineBreaks = strings.NewReplacer("\r\n", "\n")
+
+// narrow selects the last steps characters, which must read original, and
+// checks that they do by copying them. An editor driven by scripts
+// (ProseMirror, under the input boxes of Claude and ChatGPT) takes a new
+// selection in only after the key presses that made it, and would paste over
+// the old one meanwhile; the copy waits for that, and the paste never goes
+// over anything else.
+func (s *Switcher) narrow(ctx context.Context, original string, steps int) error {
+	if err := s.deps.Keyboard.CollapseSelectionRight(); err != nil {
+		return err
+	}
+	if err := s.deps.Keyboard.SelectCharsLeft(steps); err != nil {
+		return err
+	}
+	s.pause()
+	want := lineBreaks.Replace(original)
+	check, cancel := context.WithTimeout(ctx, s.options.SelectionTimeout)
+	defer cancel()
+	for {
+		text, err := s.copySelection(check)
+		if err == nil && lineBreaks.Replace(text) == want {
+			return nil
+		}
+		if err != nil && !errors.Is(err, ErrNothingToConvert) && check.Err() == nil {
+			return err
+		}
+		select {
+		case <-time.After(s.options.SelectionRecheck):
+		case <-check.Done():
+			return ErrNotSelected
+		}
+	}
 }
 
 // pickLayouts guesses which layout the text was typed in and picks the next

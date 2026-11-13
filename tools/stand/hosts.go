@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -298,9 +299,50 @@ func (v *vscode) editor() *editorHost {
 	}}
 }
 
+const edgeExe = `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+
+// launchBrowser opens prosemirror.html, next to this file, in an Edge app
+// window with a profile of its own. ProseMirror stands for the script-driven
+// editors (Claude, ChatGPT) whose selection lags the browser's; the page
+// mirrors the editor's text into the window title.
+func launchBrowser(profile string) *editorHost {
+	_, self, _, _ := runtime.Caller(0)
+	page := "file:///" + filepath.ToSlash(filepath.Join(filepath.Dir(self), "prosemirror.html"))
+	check(os.MkdirAll(profile, 0o700), "edge profile")
+	before := topLevel("Chrome_WidgetWin_1", 0)
+	createProcess(fmt.Sprintf(`"%s" --user-data-dir="%s" --no-first-run --no-default-browser-check --app=%s`, edgeExe, profile, page), 0)
+	var hwnd uintptr
+	deadline := time.Now().Add(20 * time.Second)
+	for hwnd == 0 && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		for h := range topLevel("Chrome_WidgetWin_1", 0) {
+			if !before[h] && windowText(h) == "stand:" {
+				hwnd = h
+			}
+		}
+	}
+	if hwnd == 0 {
+		fatal("the ProseMirror page did not load")
+	}
+	return &editorHost{hwnd: hwnd,
+		read: func() (string, error) {
+			title, ok := strings.CutPrefix(windowText(hwnd), "stand:")
+			if !ok {
+				return "", fmt.Errorf("the page title is %q", windowText(hwnd))
+			}
+			return title, nil
+		},
+		cleanup: func() { _, _, _ = procPostMessage.Call(hwnd, 0x0010, 0, 0) }, // WM_CLOSE
+	}
+}
+
 // launchNotepad opens a fresh Notepad tab (Windows 11 Notepad adds it to a
 // window already open) and closes only that tab afterwards.
 func launchNotepad() *editorHost {
+	// A new tab would join the user's own window.
+	if len(topLevel("Notepad", 0)) > 0 {
+		fatal("a Notepad window is open; the stand leaves it alone (use -host browser)")
+	}
 	createProcess("notepad.exe", 0)
 	var hwnd, edit uintptr
 	deadline := time.Now().Add(10 * time.Second)

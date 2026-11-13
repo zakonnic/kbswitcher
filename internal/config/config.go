@@ -1,7 +1,8 @@
-// Package config stores the settings the user can change: the hotkey, whether
-// kbswitcher starts with the session, and whether converting a word also
-// switches the keyboard layout. The file is small JSON in the per-user
-// configuration directory, written with owner-only permissions.
+// Package config stores the settings the user can change: the hotkey and the
+// modifier that turns it to the selection, whether kbswitcher starts with the
+// session, and whether converting also switches the keyboard layout. The file
+// is small JSON in the per-user configuration directory, written with
+// owner-only permissions.
 package config
 
 import (
@@ -24,8 +25,7 @@ const (
 	maxFileSize = 64 << 10
 )
 
-// Hotkey is the configured key combination. The same key with Shift converts
-// the selection instead of the last word, so Shift cannot be part of it.
+// Hotkey is the configured key combination, which converts the last word.
 type Hotkey struct {
 	Key       string   `json:"key"`
 	Modifiers []string `json:"modifiers"`
@@ -33,19 +33,26 @@ type Hotkey struct {
 
 // Config is the whole configuration file.
 type Config struct {
-	Hotkey    Hotkey `json:"hotkey"`
-	Autostart bool   `json:"autostart"`
-	// SwitchLayout makes the last-word hotkey also switch the keyboard to the
-	// layout the converted word belongs to.
-	SwitchLayout bool `json:"switch_layout"`
+	Hotkey Hotkey `json:"hotkey"`
+	// SelectionModifier, held with the hotkey, converts the selection instead
+	// of the last word.
+	SelectionModifier string `json:"selection_modifier"`
+	Autostart         bool   `json:"autostart"`
+	// SwitchLayout makes converting the last word also switch the keyboard to
+	// the layout the word now belongs to; SwitchLayoutSelection does the same
+	// for the selection.
+	SwitchLayout          bool `json:"switch_layout"`
+	SwitchLayoutSelection bool `json:"switch_layout_selection"`
 }
 
 // Default returns the configuration of a fresh installation.
 func Default() Config {
 	return Config{
-		Hotkey:       Hotkey{Key: hotkey.DefaultKey(), Modifiers: []string{}},
-		Autostart:    false,
-		SwitchLayout: true,
+		Hotkey:                Hotkey{Key: hotkey.DefaultKey(), Modifiers: []string{}},
+		SelectionModifier:     "Shift",
+		Autostart:             false,
+		SwitchLayout:          true,
+		SwitchLayoutSelection: true,
 	}
 }
 
@@ -58,22 +65,47 @@ func (c Config) Combo() (hotkey.Combo, error) {
 	return hotkey.Combo{Key: c.Hotkey.Key, Mods: mods}, nil
 }
 
+// SelectionCombo is the hotkey with the selection modifier added.
+func (c Config) SelectionCombo() (hotkey.Combo, error) {
+	combo, err := c.Combo()
+	if err != nil {
+		return hotkey.Combo{}, err
+	}
+	mod, err := c.selectionModifier()
+	if err != nil {
+		return hotkey.Combo{}, err
+	}
+	return combo.With(mod), nil
+}
+
+func (c Config) selectionModifier() (hotkey.Modifier, error) {
+	mod, err := hotkey.ParseModifiers([]string{c.SelectionModifier})
+	if err != nil {
+		return 0, err
+	}
+	if len(mod.Names()) != 1 {
+		return 0, errors.New("the selection modifier must be one of Ctrl, Alt, Shift or the system key")
+	}
+	return mod, nil
+}
+
 // Validate reports what is wrong with the configuration, if anything.
 func (c Config) Validate() error {
-	if c.Hotkey.Key == "" {
-		return errors.New("no hotkey is configured")
-	}
-	if !hotkey.Supported(c.Hotkey.Key) {
-		return fmt.Errorf("key %q cannot be bound on this system", c.Hotkey.Key)
-	}
-	mods, err := hotkey.ParseModifiers(c.Hotkey.Modifiers)
+	combo, err := c.Combo()
 	if err != nil {
 		return err
 	}
-	if mods.Has(hotkey.ModShift) {
-		return errors.New("the hotkey cannot include Shift: it is what selects the second action")
+	if err := combo.Check(); err != nil {
+		return err
 	}
-	return nil
+	mod, err := c.selectionModifier()
+	if err != nil {
+		return err
+	}
+	if combo.Mods.Has(mod) {
+		return fmt.Errorf("the hotkey already holds %s, the key that converts the selection", hotkey.Label(mod.Names()[0]))
+	}
+	return combo.With(mod).Check()
 }
 
 // Path returns the location of the configuration file.

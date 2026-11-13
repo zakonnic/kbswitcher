@@ -73,10 +73,11 @@ Wayland deliberately offers no way to grab a global hotkey or to type into anoth
 
 | Hotkey                                | What it does                                                                                     |
 |---------------------------------------|--------------------------------------------------------------------------------------------------|
-| **Break** (**F12** on a Mac)          | Rewrites the word before the caret and switches the keyboard to the layout that word now belongs to, so you can keep typing. The switch can be turned off in Settings. |
-| **Shift+Break** (**Shift+F12** on a Mac) | Rewrites the selected text and leaves the keyboard layout alone. In a Windows terminal it rewrites what the shell shows as selected, or the whole input line when nothing is. |
+| **Break** (**F12** on a Mac)          | Rewrites the word before the caret and switches the keyboard to the layout that word now belongs to, so you can keep typing. |
+| **Shift+Break** (**Shift+F12** on a Mac) | Rewrites the selected text and switches the keyboard the same way. In a Windows terminal it rewrites what the shell shows as selected, or the whole input line when nothing is. |
 
-Press the same hotkey again to move on to the next layout. Both hotkeys are configurable.
+Press the same hotkey again to move on to the next layout. The hotkey, the modifier that turns it to the selection,
+and each of the two layout switches can be changed in Settings.
 
 ## Settings
 
@@ -84,11 +85,14 @@ Right-click the tray icon:
 
 - **About** — version, the layouts that were found and the order they are cycled in, and a button that checks for a
   newer release and installs it.
-- **Settings** — whether kbswitcher starts with your session, which key (with optional Ctrl, Alt or Cmd/Win)
-  triggers it, and whether converting a word also switches the keyboard layout. To change the key, click the Hotkey
-  field and press the key; the hotkey is released while the field listens, so the current key can be pressed there
-  too. Shift is reserved: it turns the hotkey into its "convert the selection" form. Save puts the settings in force
-  at once; Cancel discards the changes.
+- **Settings** — whether kbswitcher starts with your session; whether converting the last word, and converting a
+  selection, also switch the keyboard layout (both on by default); the hotkey; and the modifier that, held with the
+  hotkey, converts the selection instead (Shift by default). To change the hotkey, click its field and press a key,
+  or a modifier and a key together: at most two keys, and a key used in typing (a letter, a digit, Space, an
+  arrow…) needs a modifier. On Windows a letter is the one the layout in use puts on the key, as for any Windows
+  shortcut; on macOS and Linux a key is bound by its position. Escape stops listening.
+  The hotkeys are released while a field listens, so the current ones can be pressed there too. Save puts the
+  settings in force at once; Cancel discards the changes.
 - **Quit**.
 
 The configuration is a small JSON file:
@@ -105,8 +109,9 @@ A log of the current run is written to the user cache directory (`%LocalAppData%
 
 ## How it works
 
-kbswitcher asks the operating system to notify it about one key combination — `RegisterHotKey` on Windows,
-`RegisterEventHotKey` on macOS, `XGrabKey` on X11 — and is woken up only when that combination is pressed.
+kbswitcher asks the operating system to notify it about two key combinations, the hotkey and the same with the
+selection modifier — `RegisterHotKey` on Windows, `RegisterEventHotKey` on macOS, `XGrabKey` on X11 — and is woken
+up only when one of them is pressed.
 
 When the hotkey fires, it does what you would do by hand:
 
@@ -114,7 +119,9 @@ When the hotkey fires, it does what you would do by hand:
    text);
 2. copy;
 3. work out which layout the text was typed in, and rewrite it for the next one;
-4. paste the result and give your clipboard back.
+4. select exactly the word and copy it once more, which waits for editors that take a selection in late, such as
+   the input boxes of Claude and ChatGPT;
+5. paste the result and give your clipboard back.
 
 On Windows, what kbswitcher puts on the clipboard along the way is marked so that clipboard history and cloud
 clipboard sync leave it out, and the clipboard is given back the moment the application has read the paste. A

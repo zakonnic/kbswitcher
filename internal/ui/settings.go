@@ -1,7 +1,10 @@
 package ui
 
 import (
-	"slices"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -17,7 +20,11 @@ import (
 const (
 	settingsWidth = 520
 	settingsRow   = 42
+	rebindDelay   = 100 * time.Millisecond
 )
+
+// messageInk is the color of what the settings window has to tell the user.
+var messageInk = rgba(0xFF, 0xB3, 0x40, 0xFF)
 
 // settingsWindow is the settings window and the form it edits.
 type settingsWindow struct {
@@ -38,7 +45,24 @@ func (a *App) showSettings() {
 func (a *App) newSettings() *settingsWindow {
 	w := &settingsWindow{chrome: a.newWindow(buildinfo.Name + " Settings"), form: newSettingsForm(a.config)}
 	form := w.form
-	form.key.onFocus = a.options.Suspend
+	// The window grows and shrinks with the message under the hotkeys.
+	form.resized = func() { w.window.Resize(fyne.NewSize(w.width, 0)) }
+	// Moving from one field to the other loses one focus before it gains the
+	// other; the hotkeys are bound again only once neither field listens.
+	listening := func(bool) {
+		if form.key.focused || form.modifier.focused {
+			a.options.Suspend(true)
+			return
+		}
+		time.AfterFunc(rebindDelay, func() {
+			fyne.Do(func() {
+				if !form.key.focused && !form.modifier.focused {
+					a.options.Suspend(false)
+				}
+			})
+		})
+	}
+	form.key.onFocus, form.modifier.onFocus = listening, listening
 	hide := func() {
 		w.window.Canvas().Unfocus()
 		w.window.Hide()
@@ -53,7 +77,7 @@ func (a *App) newSettings() *settingsWindow {
 	save := newButton("Save", func() {
 		updated := form.config()
 		if err := updated.Validate(); err != nil {
-			dialog.ShowError(err, w.window)
+			form.show(sentence(err.Error()))
 			return
 		}
 		if err := a.options.Apply(updated); err != nil {
@@ -76,13 +100,15 @@ func (a *App) newSettings() *settingsWindow {
 	body := container.New(column{},
 		card(
 			row(settingsRow, label("Start when I log in", text, fg, false), form.autostart),
-			row(settingsRow, caption("Switch the keyboard layout", "to the layout of the converted word"), form.switchLayout),
+			row(settingsRow, caption("Switch the layout after a word", "to the layout the word was converted to"), form.switchWord),
+			row(settingsRow, caption("Switch the layout after a selection", "to the layout the text was converted to"), form.switchSelection),
 		),
 		gap(0, bodyGap),
 		card(
-			row(settingsRow, label("Hotkey", text, fg, false), form.key),
-			row(settingsRow, label("Modifiers", text, fg, false), form.modifiers),
+			row(settingsRow, caption("Hotkey", "converts the last word"), form.key),
+			row(settingsRow, caption("Selection modifier", "held with the hotkey, converts the selection"), form.modifier),
 		),
+		container.New(layout.NewCustomPaddedLayout(10, 0, cardPadding, cardPadding), form.message),
 		gap(0, 14),
 		container.New(layout.NewCustomPaddedLayout(0, 0, cardPadding, cardPadding), form.preview),
 		gap(0, bodyGap),
@@ -96,79 +122,152 @@ func (a *App) newSettings() *settingsWindow {
 
 // settingsForm holds the controls of the settings window.
 type settingsForm struct {
-	autostart    *toggle
-	switchLayout *toggle
-	key          *keyField
-	checks       []*checkbox // one per hotkey.Modifiers(), in that order
-	modifiers    fyne.CanvasObject
-	preview      *fyne.Container
+	autostart, switchWord, switchSelection *toggle
+	key, modifier                          *keyField
+	message                                *fyne.Container
+	preview                                *fyne.Container
+	// note is what a key field had to say about the last press.
+	note    string
+	resized func()
 }
 
 func newSettingsForm(cfg config.Config) *settingsForm {
 	f := &settingsForm{
-		autostart:    newToggle(nil),
-		switchLayout: newToggle(nil),
-		key:          newKeyField(),
-		preview:      container.New(column{}),
+		autostart:       newToggle(nil),
+		switchWord:      newToggle(nil),
+		switchSelection: newToggle(nil),
+		key:             newKeyField(2, "Press keys", checkHotkey),
+		modifier:        newKeyField(1, "Press a modifier", checkModifier),
+		message:         container.New(column{}),
+		preview:         container.New(column{}),
 	}
-	boxes := make([]fyne.CanvasObject, 0, len(hotkey.Modifiers()))
-	for _, name := range hotkey.Modifiers() {
-		check := newCheckbox(name, func(bool) { f.refreshPreview() })
-		f.checks = append(f.checks, check)
-		boxes = append(boxes, check)
-	}
-	f.modifiers = line(12, boxes...)
-	f.key.onChanged = func(string) { f.refreshPreview() }
-	f.switchLayout.onChanged = func(bool) { f.refreshPreview() }
+	changed := func([]string) { f.refresh() }
+	f.key.onChanged, f.modifier.onChanged = changed, changed
+	noted := func(note string) { f.note = note; f.refresh() }
+	f.key.onMessage, f.modifier.onMessage = noted, noted
+	f.switchWord.onChanged = func(bool) { f.refresh() }
+	f.switchSelection.onChanged = func(bool) { f.refresh() }
 	f.reset(cfg)
 	return f
 }
 
+// checkHotkey says why keys cannot be the hotkey: at most one of them may be
+// a key other than a modifier, and one must be.
+func checkHotkey(keys []string) error {
+	combo, err := comboOf(keys)
+	if err != nil {
+		return err
+	}
+	return combo.Check()
+}
+
+// checkModifier says why keys cannot be the selection modifier.
+func checkModifier(keys []string) error {
+	if len(keys) != 1 || !hotkey.IsModifier(keys[0]) {
+		return fmt.Errorf("only a modifier can be chosen here: %s, %s, %s or %s",
+			hotkey.Label("Shift"), hotkey.Label("Ctrl"), hotkey.Label("Alt"), hotkey.Label("Super"))
+	}
+	return nil
+}
+
+func comboOf(keys []string) (hotkey.Combo, error) {
+	var combo hotkey.Combo
+	for _, key := range keys {
+		if hotkey.IsModifier(key) {
+			mod, _ := hotkey.ParseModifiers([]string{key})
+			combo.Mods |= mod
+			continue
+		}
+		if combo.Key != "" {
+			return combo, errors.New("two keys need one of them to be a modifier")
+		}
+		combo.Key = key
+	}
+	if combo.Key == "" {
+		return combo, errors.New("a modifier needs a key to go with it")
+	}
+	return combo, nil
+}
+
 // config returns what the controls currently show.
 func (f *settingsForm) config() config.Config {
-	names := []string{}
-	for _, check := range f.checks {
-		if check.checked {
-			names = append(names, check.text)
-		}
+	combo, _ := comboOf(f.key.value) // the field only takes what comboOf accepts
+	modifier := ""
+	if len(f.modifier.value) == 1 {
+		modifier = f.modifier.value[0]
 	}
 	return config.Config{
-		Hotkey:       config.Hotkey{Key: f.key.selected, Modifiers: names},
-		Autostart:    f.autostart.on,
-		SwitchLayout: f.switchLayout.on,
+		Hotkey:                config.Hotkey{Key: combo.Key, Modifiers: combo.Mods.Names()},
+		SelectionModifier:     modifier,
+		Autostart:             f.autostart.on,
+		SwitchLayout:          f.switchWord.on,
+		SwitchLayoutSelection: f.switchSelection.on,
 	}
 }
 
 // reset makes the controls show a configuration.
 func (f *settingsForm) reset(cfg config.Config) {
-	mods, err := hotkey.ParseModifiers(cfg.Hotkey.Modifiers)
+	combo, err := cfg.Combo()
 	if err != nil {
-		mods = 0
+		combo, _ = config.Default().Combo()
 	}
-	names := mods.Names()
-	for _, check := range f.checks {
-		check.setChecked(slices.Contains(names, check.text))
+	modifier, err := hotkey.ParseModifiers([]string{cfg.SelectionModifier})
+	if err != nil || len(modifier.Names()) != 1 {
+		modifier = hotkey.ModShift
 	}
 	f.autostart.setOn(cfg.Autostart)
-	f.switchLayout.setOn(cfg.SwitchLayout)
-	f.key.reset(cfg.Hotkey.Key)
-	f.refreshPreview()
+	f.switchWord.setOn(cfg.SwitchLayout)
+	f.switchSelection.setOn(cfg.SwitchLayoutSelection)
+	f.key.reset(combo.Names())
+	f.modifier.reset(modifier.Names())
+	f.note = ""
+	f.refresh()
 }
 
-// refreshPreview shows what the combinations on screen will do.
-func (f *settingsForm) refreshPreview() {
+// show puts a message under the hotkey card, a line a sentence, or takes it
+// away.
+func (f *settingsForm) show(message string) {
+	before := len(f.message.Objects)
+	f.message.Objects = nil
+	if message != "" {
+		for _, sentence := range strings.Split(message, "\n") {
+			f.message.Add(label(sentence, 12, messageInk, false))
+		}
+	}
+	f.message.Hidden = message == ""
+	f.message.Refresh()
+	if len(f.message.Objects) != before && f.resized != nil {
+		f.resized()
+	}
+}
+
+// refresh shows what the combinations on screen will do, and what is wrong
+// with them.
+func (f *settingsForm) refresh() {
 	cfg := f.config()
+	message := f.note
+	if err := cfg.Validate(); err != nil {
+		message = sentence(err.Error())
+	}
+	f.show(message)
+
+	word, selection, ok := combos(cfg)
+	if !ok {
+		f.preview.Objects = nil
+		f.preview.Refresh()
+		return
+	}
 	secondary := theme.Color(colorNameSecondary)
-	// The form only offers valid modifiers, so the combination always parses.
-	word, selection, _ := combos(cfg)
-	what := "converts the last word"
-	if cfg.SwitchLayout {
-		what = "converts the last word and switches the layout"
+	what := func(text string, switches bool) fyne.CanvasObject {
+		if switches {
+			text += " and switches the layout"
+		}
+		return besideCaps(label(text, 12, secondary, false))
 	}
 	f.preview.Objects = []fyne.CanvasObject{
-		line(8, keyCaps(word), label(what, 12, secondary, false)),
+		line(8, keyCaps(word), what("converts the last word", cfg.SwitchLayout)),
 		gap(0, 6),
-		line(8, keyCaps(selection), label("converts the selected text", 12, secondary, false)),
+		line(8, keyCaps(selection), what("converts the selected text", cfg.SwitchLayoutSelection)),
 	}
 	f.preview.Refresh()
 }

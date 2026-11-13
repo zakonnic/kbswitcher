@@ -13,22 +13,6 @@ import (
 	"sync"
 )
 
-// keyCodes maps the portable key names to X11 keysyms. The X server turns a
-// keysym into the keycode of the physical key, so the table does not depend
-// on the keyboard.
-var keyCodes = map[string]uint32{
-	"Pause":      0xFF13,
-	"ScrollLock": 0xFF14,
-	"Insert":     0xFF63,
-	"Home":       0xFF50,
-	"End":        0xFF57,
-	"F1":         0xFFBE, "F2": 0xFFBF, "F3": 0xFFC0, "F4": 0xFFC1,
-	"F5": 0xFFC2, "F6": 0xFFC3, "F7": 0xFFC4, "F8": 0xFFC5,
-	"F9": 0xFFC6, "F10": 0xFFC7, "F11": 0xFFC8, "F12": 0xFFC9,
-	"F13": 0xFFCA, "F14": 0xFFCB, "F15": 0xFFCC, "F16": 0xFFCD,
-	"F17": 0xFFCE, "F18": 0xFFCF, "F19": 0xFFD0,
-}
-
 // X11 modifier masks.
 const (
 	maskShift   = 1 << 0
@@ -40,23 +24,6 @@ const (
 )
 
 const maxPendingRegistrations = 8
-
-func keyCode(name string) (uint32, bool) {
-	code, ok := keyCodes[name]
-	return code, ok
-}
-
-// scanCodes names the keys that GLFW reports by X keycode alone, as the evdev
-// driver numbers them. F13 and above are left out: the stock keymap gives
-// their keycodes other symbols.
-var scanCodes = map[int]string{127: "Pause", 78: "ScrollLock"}
-
-// KeyForScanCode names the bindable key with the scan code GLFW reports, for
-// keys the toolkit has no name for.
-func KeyForScanCode(code int) (string, bool) {
-	name, ok := scanCodes[code]
-	return name, ok
-}
 
 // DefaultKey is the key bound when no configuration exists yet.
 func DefaultKey() string { return "Pause" }
@@ -70,6 +37,8 @@ type binding struct {
 // request is a message to the goroutine that owns the X connection.
 type request struct {
 	binding binding
+	// keysym names the key when the binding has no keycode.
+	keysym  uint32
 	handler func()
 	stop    bool
 	result  chan error
@@ -122,7 +91,7 @@ func Open() (*Manager, error) {
 
 // Register binds a combination. The handler runs on a goroutine of its own.
 func (m *Manager) Register(combo Combo, handler func()) error {
-	keysym, ok := keyCode(combo.Key)
+	key, ok := keys[combo.Key]
 	if !ok {
 		return fmt.Errorf("hotkey: key %q is not available on this system", combo.Key)
 	}
@@ -134,9 +103,12 @@ func (m *Manager) Register(combo Combo, handler func()) error {
 		return errors.New("hotkey: manager is closed")
 	}
 
-	// The keysym becomes a keycode on the goroutine that owns the connection.
+	// The key is grabbed where it sits, as the settings window recorded it;
+	// a keysym is turned into a keycode on the goroutine that owns the
+	// connection.
 	return m.ask(request{
-		binding: binding{keycode: keysym, modifiers: nativeModifiers(combo.Mods)},
+		binding: binding{keycode: uint32(key.scan), modifiers: nativeModifiers(combo.Mods)}, //nolint:gosec // an X keycode is a byte
+		keysym:  key.code,
 		handler: handler,
 	})
 }
@@ -203,10 +175,10 @@ func (m *Manager) loop() {
 	}
 }
 
-// dispatch runs the handler of a pressed combination. Caps Lock and Num Lock
-// are grabbed along with the combination but are not part of it.
+// dispatch runs the handler of a pressed combination. Caps Lock, Num Lock and
+// the layout group the state also carries are not part of it.
 func (m *Manager) dispatch(keycode, state uint32) {
-	pressed := binding{keycode: keycode, modifiers: state &^ (maskLock | maskNumLock)}
+	pressed := binding{keycode: keycode, modifiers: state & (maskShift | maskControl | maskAlt | maskSuper)}
 
 	m.mu.Lock()
 	handler := m.handlers[pressed]
@@ -236,7 +208,10 @@ func (m *Manager) serve() bool {
 
 // grab takes one combination on the goroutine that owns the connection.
 func (m *Manager) grab(req request) error {
-	keycode := uint32(C.XKeysymToKeycode(m.display, C.KeySym(req.binding.keycode)))
+	keycode := req.binding.keycode
+	if keycode == 0 {
+		keycode = uint32(C.XKeysymToKeycode(m.display, C.KeySym(req.keysym)))
+	}
 	if keycode == 0 {
 		return errors.New("hotkey: this keyboard has no such key")
 	}

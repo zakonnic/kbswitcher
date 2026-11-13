@@ -36,7 +36,7 @@ type options struct {
 
 func main() {
 	var o options
-	flag.StringVar(&o.host, "host", "conhost", "conhost, wt, vscode or notepad")
+	flag.StringVar(&o.host, "host", "conhost", "conhost, wt, vscode, notepad or browser")
 	flag.StringVar(&o.shell, "shell", "powershell.exe", "shell command line")
 	flag.StringVar(&o.word, "word", "ghbdtn", "keys to press, named as on a US keyboard")
 	flag.StringVar(&o.layout, "layout", "00000409", "layout the word is typed in")
@@ -84,6 +84,8 @@ func main() {
 		}
 	case "notepad":
 		h = launchNotepad()
+	case "browser":
+		h = launchBrowser(filepath.Join(filepath.Dir(o.vsdir), "edge"))
 	default:
 		fatal("unknown host %q", o.host)
 	}

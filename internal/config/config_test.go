@@ -26,10 +26,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
 
 	want := Config{
-		Hotkey:    Hotkey{Key: "F9", Modifiers: []string{"Ctrl"}},
-		Autostart: true,
-		// Off, unlike the default, so that the file is proven to carry it.
-		SwitchLayout: false,
+		Hotkey:            Hotkey{Key: "Q", Modifiers: []string{"Ctrl"}},
+		SelectionModifier: "Alt",
+		Autostart:         true,
+		// Off, unlike the default, so that the file is proven to carry them.
+		SwitchLayout:          false,
+		SwitchLayoutSelection: false,
 	}
 	if err := SaveTo(path, want); err != nil {
 		t.Fatalf("SaveTo: %v", err)
@@ -40,7 +42,8 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("LoadFrom: %v", err)
 	}
 	if got.Hotkey.Key != want.Hotkey.Key || got.Autostart != want.Autostart ||
-		got.SwitchLayout != want.SwitchLayout ||
+		got.SwitchLayout != want.SwitchLayout || got.SwitchLayoutSelection != want.SwitchLayoutSelection ||
+		got.SelectionModifier != want.SelectionModifier ||
 		len(got.Hotkey.Modifiers) != 1 || got.Hotkey.Modifiers[0] != "Ctrl" {
 		t.Errorf("round trip gave %+v, want %+v", got, want)
 	}
@@ -51,16 +54,19 @@ func TestLoadFromMissingFileGivesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing configuration file must not be an error, got %v", err)
 	}
-	if got.Hotkey.Key != Default().Hotkey.Key || got.Autostart || !got.SwitchLayout {
+	if got.Hotkey.Key != Default().Hotkey.Key || got.Autostart || !got.SwitchLayout || !got.SwitchLayoutSelection {
 		t.Errorf("LoadFrom(missing) = %+v, want the defaults", got)
 	}
 }
 
 func TestLoadFromDamagedFile(t *testing.T) {
 	tests := map[string]string{
-		"not json":       "{ this is not json",
-		"unknown key":    `{"hotkey": {"key": "NoSuchKey"}}`,
-		"shift reserved": `{"hotkey": {"key": "F9", "modifiers": ["Shift"]}}`,
+		"not json":                   "{ this is not json",
+		"unknown key":                `{"hotkey": {"key": "NoSuchKey"}}`,
+		"a letter alone":             `{"hotkey": {"key": "Q"}}`,
+		"selection modifier in use":  `{"hotkey": {"key": "F9", "modifiers": ["Shift"]}}`,
+		"selection modifier unknown": `{"selection_modifier": "Fn"}`,
+		"selection modifier missing": `{"selection_modifier": ""}`,
 	}
 	for name, content := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -77,6 +83,25 @@ func TestLoadFromDamagedFile(t *testing.T) {
 				t.Errorf("LoadFrom returned %+v, want the defaults alongside the error", got)
 			}
 		})
+	}
+}
+
+func TestAFileFromAnOlderVersionGetsTheNewDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	old := `{"hotkey": {"key": "F9", "modifiers": ["Ctrl"]}, "autostart": true, "switch_layout": false}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if got.SelectionModifier != "Shift" || !got.SwitchLayoutSelection || got.SwitchLayout {
+		t.Errorf("LoadFrom = %+v, want Shift, switching after a selection, and the file's own switch_layout", got)
+	}
+	selection, err := got.SelectionCombo()
+	if err != nil || selection.String() != "Ctrl+Shift+F9" {
+		t.Errorf("SelectionCombo = %v, %v; want Ctrl+Shift+F9", selection, err)
 	}
 }
 

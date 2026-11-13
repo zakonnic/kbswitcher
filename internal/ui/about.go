@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
@@ -102,26 +103,43 @@ func hotkeyRows(cfg config.Config) []fyne.CanvasObject {
 	if !ok {
 		return []fyne.CanvasObject{row(aboutRow, label("The hotkey is not configured.", 12, secondary, false), gap(0, 0))}
 	}
-	what := "last word"
-	if cfg.SwitchLayout {
-		what = "last word + switch"
+	what := func(text string, switches bool) fyne.CanvasObject {
+		if switches {
+			text += " + switch"
+		}
+		return besideCaps(label(text, 11.5, secondary, false))
 	}
 	return []fyne.CanvasObject{
-		row(aboutRow, keyCaps(word), label(what, 11.5, secondary, false)),
-		row(aboutRow, keyCaps(selection), label("selection", 11.5, secondary, false)),
+		row(aboutRow, keyCaps(word), what("last word", cfg.SwitchLayout)),
+		row(aboutRow, keyCaps(selection), what("selection", cfg.SwitchLayoutSelection)),
 	}
 }
 
 // keyCaps draws a combination as key caps joined by plus signs.
 func keyCaps(combo hotkey.Combo) fyne.CanvasObject {
 	var caps []fyne.CanvasObject
-	for i, name := range append(combo.Mods.Names(), combo.Key) {
+	for i, name := range combo.Names() {
 		if i > 0 {
-			caps = append(caps, label("+", 11, withAlpha(theme.Color(theme.ColorNameForeground), 0.55), false))
+			caps = append(caps, besideCaps(label("+", 11, withAlpha(theme.Color(theme.ColorNameForeground), 0.55), false)))
 		}
-		caps = append(caps, newChip(name, keycapStyle))
+		caps = append(caps, newChip(hotkey.Label(name), keycapStyle))
 	}
 	return line(5, caps...)
+}
+
+// besideCaps makes a text as tall as a key cap and centers its glyphs on the
+// cap's face, as the cap centers its own legend, so that the two read on one
+// line. Centered on the whole cap, lip included, the text would sit low.
+func besideCaps(text *canvas.Text) fyne.CanvasObject { return container.New(capBand{}, text) }
+
+type capBand struct{}
+
+func (capBand) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(objects[0].MinSize().Width, keycapStyle.height+lipHeight)
+}
+
+func (capBand) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	placeText(objects[0].(*canvas.Text), 0, size.Width, keycapStyle.height)
 }
 
 var badgeColors = []color.Color{

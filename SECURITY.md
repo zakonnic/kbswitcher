@@ -16,8 +16,9 @@ sleeps.
 This is the claim worth checking first, because a tool of this kind could
 plausibly be a keylogger, and this one is built so that it cannot be.
 
-kbswitcher registers **one key combination** with the operating system and is
-woken up only when that combination is pressed:
+kbswitcher registers **two key combinations** with the operating system, the
+hotkey and the same with the selection modifier, and is woken up only when one
+of them is pressed:
 
 | Platform | Call                                | File                                       |
 |----------|-------------------------------------|--------------------------------------------|
@@ -32,6 +33,12 @@ everything typed. `grep` the sources for them: there are no matches. There is
 no setting that turns such a hook on; remembering keystrokes is out of scope by
 design.
 
+The Settings window records a new hotkey from the keys pressed while its
+field has the focus, as any text field receives keys typed into it. The keys
+are held in memory only until they are released, and kept only as the
+configured combination; the hotkeys are released while the field listens, so
+that the current ones reach it.
+
 ## What it reads, and when
 
 Only on a hotkey press. In an ordinary application it goes through the
@@ -44,7 +51,10 @@ clipboard:
 3. the selection is extended and copied with synthetic key presses — the same
    shortcuts a user would press (`internal/platform/input`);
 4. the text is converted in memory (`internal/keymap`, no I/O at all);
-5. the result is pasted and the original clipboard content restored.
+5. for the last word, the selection is narrowed down to the word and copied
+   again: nothing is pasted until the application shows exactly that word
+   selected;
+6. the result is pasted and the original clipboard content restored.
 
 The whole sequence lives in `internal/switcher/switcher.go` and takes about
 100 ms. Text is never written to disk, never sent anywhere, and never logged:

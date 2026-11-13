@@ -132,10 +132,10 @@ func (a *App) Apply(cfg config.Config) error {
 		return err
 	}
 
-	a.switcher.SetSwitchLayout(cfg.SwitchLayout)
+	a.switcher.SetSwitchLayout(cfg.SwitchLayout, cfg.SwitchLayoutSelection)
 	a.config = cfg
-	a.log.Info("settings applied", "hotkey", cfg.Hotkey.Key, "autostart", cfg.Autostart,
-		"switch_layout", cfg.SwitchLayout)
+	a.log.Info("settings applied", "hotkey", cfg.Hotkey.Key, "selection_modifier", cfg.SelectionModifier,
+		"autostart", cfg.Autostart, "switch_layout", cfg.SwitchLayout, "switch_layout_selection", cfg.SwitchLayoutSelection)
 	return nil
 }
 
@@ -223,7 +223,7 @@ func (a *App) buildSwitcher() error {
 	if err != nil {
 		return err
 	}
-	a.switcher.SetSwitchLayout(a.config.SwitchLayout)
+	a.switcher.SetSwitchLayout(a.config.SwitchLayout, a.config.SwitchLayoutSelection)
 	return nil
 }
 
@@ -243,9 +243,13 @@ func (terminal) Open() (switcher.Console, error) {
 }
 
 // bindHotkeys replaces the current bindings with the configured combination and
-// the same combination plus Shift.
+// the same combination plus the selection modifier.
 func (a *App) bindHotkeys(cfg config.Config) error {
 	combo, err := cfg.Combo()
+	if err != nil {
+		return err
+	}
+	selection, err := cfg.SelectionCombo()
 	if err != nil {
 		return err
 	}
@@ -261,7 +265,6 @@ func (a *App) bindHotkeys(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	selection := combo.With(hotkey.ModShift)
 	if err := manager.Register(combo, a.convertLastWord); err != nil {
 		_ = manager.Close()
 		return err

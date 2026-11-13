@@ -101,11 +101,16 @@ func icon() fyne.Resource {
 	return fyne.NewStaticResource("icon.png", assets.IconPNG)
 }
 
-// combos are the configured combination and the same plus Shift.
+// combos are the configured combination and the same plus the selection
+// modifier.
 func combos(cfg config.Config) (word, selection hotkey.Combo, ok bool) {
-	combo, err := cfg.Combo()
+	word, err := cfg.Combo()
 	if err != nil {
 		return hotkey.Combo{}, hotkey.Combo{}, false
 	}
-	return combo, combo.With(hotkey.ModShift), true
+	selection, err = cfg.SelectionCombo()
+	if err != nil {
+		return hotkey.Combo{}, hotkey.Combo{}, false
+	}
+	return word, selection, true
 }

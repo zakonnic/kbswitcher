@@ -33,6 +33,7 @@ var (
 	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
 	procSendMessageTimeoutW      = user32.NewProc("SendMessageTimeoutW")
 	procSendInput                = user32.NewProc("SendInput")
+	procPostMessage              = user32.NewProc("PostMessageW")
 )
 
 type keyboardInput struct {

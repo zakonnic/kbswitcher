@@ -34,34 +34,6 @@ const (
 	maxPendingRegistrations = 8
 )
 
-// keyCodes maps the portable key names to virtual key codes. Only keys that
-// exist on a PC keyboard are listed.
-var keyCodes = map[string]uint32{
-	"Pause":      0x13,
-	"ScrollLock": 0x91,
-	"Insert":     0x2D,
-	"Home":       0x24,
-	"End":        0x23,
-	"F1":         0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
-	"F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77,
-	"F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
-}
-
-func keyCode(name string) (uint32, bool) {
-	code, ok := keyCodes[name]
-	return code, ok
-}
-
-// scanCodes names the keys that GLFW reports by scan code alone.
-var scanCodes = map[int]string{0x45: "Pause", 0x46: "ScrollLock"}
-
-// KeyForScanCode names the bindable key with the scan code GLFW reports, for
-// keys the toolkit has no name for.
-func KeyForScanCode(code int) (string, bool) {
-	name, ok := scanCodes[code]
-	return name, ok
-}
-
 // DefaultKey is the key bound when no configuration exists yet.
 func DefaultKey() string { return "Pause" }
 
@@ -121,10 +93,10 @@ func Open() (*Manager, error) {
 
 // Register binds a combination. The handler runs on a goroutine of its own.
 func (m *Manager) Register(combo Combo, handler func()) error {
-	code, ok := keyCode(combo.Key)
-	if !ok {
+	if !Supported(combo.Key) {
 		return fmt.Errorf("hotkey: key %q is not available on this system", combo.Key)
 	}
+	code := boundCode(combo)
 
 	m.mu.Lock()
 	closed := m.closed

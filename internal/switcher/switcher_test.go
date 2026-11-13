@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/zakonnic/kbswitcher/internal/keymap"
@@ -66,6 +67,13 @@ type fakeEditor struct {
 	deaf bool
 	// copies counts the copy shortcuts answered.
 	copies int
+	// lag is how many copies, after the selection was narrowed, are answered
+	// from the selection before, as a script-driven editor (ProseMirror) does
+	// until it takes the new one in. Pastes go over the stale one too.
+	lag            int
+	stale, pending int
+	// collapsed records that the selection was narrowed.
+	collapsed bool
 }
 
 func newEditor(text string, clipboard *fakeClipboard) *fakeEditor {
@@ -103,12 +111,19 @@ func (e *fakeEditor) SelectWordLeft(times int) error {
 }
 
 func (e *fakeEditor) SelectCharsLeft(n int) error {
+	if e.lag > 0 {
+		e.pending, e.stale = max(0, e.selEnd-n), e.lag
+		return nil
+	}
 	e.selStart = max(0, e.selEnd-n)
 	return nil
 }
 
 func (e *fakeEditor) CollapseSelectionRight() error {
-	e.selStart = e.selEnd
+	e.collapsed = true
+	if e.lag == 0 {
+		e.selStart = e.selEnd
+	}
 	return nil
 }
 
@@ -118,6 +133,11 @@ func (e *fakeEditor) Copy() error {
 	}
 	e.copies++
 	e.clipboard.text = string(e.text[e.selStart:e.selEnd])
+	if e.stale > 0 {
+		if e.stale--; e.stale == 0 {
+			e.selStart = e.pending
+		}
+	}
 	return nil
 }
 
@@ -160,6 +180,8 @@ func newTestSwitcher(t *testing.T, text string) (*Switcher, *fakeEditor, *fakeCl
 
 	options := DefaultOptions()
 	options.KeyDelay = 0
+	options.SelectionTimeout = 50 * time.Millisecond
+	options.SelectionRecheck = time.Millisecond
 
 	deps := Deps{Layouts: provider, Keyboard: editor, Clipboard: clipboard}
 	s, err := New(layouts, deps, options, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -198,14 +220,51 @@ func TestConvertLastWord(t *testing.T) {
 	}
 }
 
-func TestAPlainWordIsCopiedOnce(t *testing.T) {
+func TestAPlainWordIsCopiedToReadAndToCheck(t *testing.T) {
 	s, editor, _, _ := newTestSwitcher(t, "hello ckjdj")
 
 	if err := s.ConvertLastWord(t.Context()); err != nil {
 		t.Fatalf("ConvertLastWord: %v", err)
 	}
-	if editor.copies != 1 {
-		t.Errorf("the word was copied %d times, want once", editor.copies)
+	if editor.copies != 2 {
+		t.Errorf("the word was copied %d times, want twice: to read it and to check the narrowed selection", editor.copies)
+	}
+}
+
+func TestAWordAloneIsNotNarrowed(t *testing.T) {
+	s, editor, _, _ := newTestSwitcher(t, "ckjdj")
+
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	if editor.collapsed || editor.String() != "слово" {
+		t.Errorf("narrowed %v, text %q; want no narrowing and %q", editor.collapsed, editor.String(), "слово")
+	}
+}
+
+func TestAnEditorThatTakesTheSelectionInLate(t *testing.T) {
+	// The bug seen in Claude's and ChatGPT's input boxes: the paste went over
+	// the end of the word only, leaving "C'nСэтим".
+	s, editor, _, _ := newTestSwitcher(t, "ghbdtn? xnj yt nfr C'nbv")
+	editor.lag = 2
+
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	if got, want := editor.String(), "ghbdtn? xnj yt nfr Сэтим"; got != want {
+		t.Errorf("text is %q, want %q", got, want)
+	}
+}
+
+func TestAnEditorThatNeverTakesTheSelectionInIsLeftAlone(t *testing.T) {
+	s, editor, _, _ := newTestSwitcher(t, "hello ckjdj")
+	editor.lag = 100
+
+	if err := s.ConvertLastWord(t.Context()); !errors.Is(err, ErrNotSelected) {
+		t.Fatalf("ConvertLastWord = %v, want ErrNotSelected", err)
+	}
+	if got := editor.String(); got != "hello ckjdj" {
+		t.Errorf("text is %q, want it untouched", got)
 	}
 }
 
@@ -223,7 +282,7 @@ func TestConvertLastWordSwitchesLayout(t *testing.T) {
 
 func TestConvertLastWordCanLeaveTheLayoutAlone(t *testing.T) {
 	s, editor, _, provider := newTestSwitcher(t, "ckjdj")
-	s.SetSwitchLayout(false)
+	s.SetSwitchLayout(false, true)
 
 	if err := s.ConvertLastWord(t.Context()); err != nil {
 		t.Fatalf("ConvertLastWord: %v", err)
@@ -259,8 +318,21 @@ func TestConvertSelection(t *testing.T) {
 	if got := editor.String(); got != "hello слово слово" {
 		t.Errorf("text is %q, want %q", got, "hello слово слово")
 	}
+	if russian := keymap.Fallback()[1].ID(); len(provider.activated) != 1 || provider.activated[0] != russian {
+		t.Errorf("activated layouts %v, want a single switch to %s", provider.activated, russian)
+	}
+}
+
+func TestConvertSelectionCanLeaveTheLayoutAlone(t *testing.T) {
+	s, editor, _, provider := newTestSwitcher(t, "ckjdj")
+	editor.selStart = 0
+	s.SetSwitchLayout(true, false)
+
+	if err := s.ConvertSelection(t.Context()); err != nil {
+		t.Fatalf("ConvertSelection: %v", err)
+	}
 	if len(provider.activated) != 0 {
-		t.Errorf("the selection hotkey switched the layout to %v, it must leave it alone", provider.activated)
+		t.Errorf("the layout was switched to %v although switching after a selection is off", provider.activated)
 	}
 }
 

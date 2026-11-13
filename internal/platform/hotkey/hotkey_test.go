@@ -1,7 +1,7 @@
 package hotkey
 
 import (
-	"slices"
+	"errors"
 	"testing"
 )
 
@@ -74,29 +74,71 @@ func TestComboWith(t *testing.T) {
 	}
 }
 
-func TestSupportedKeys(t *testing.T) {
-	keys := Keys()
-	if len(keys) == 0 {
-		t.Fatal("this platform reports no bindable key")
-	}
-	if !slices.Contains(keys, DefaultKey()) {
-		t.Errorf("default key %q is missing from %v", DefaultKey(), keys)
-	}
+func TestDefaultKeyIsSupported(t *testing.T) {
 	if !Supported(DefaultKey()) {
 		t.Errorf("Supported(%q) = false", DefaultKey())
 	}
 	if Supported("NoSuchKey") {
 		t.Error(`Supported("NoSuchKey") = true`)
 	}
-	if slices.Contains(Modifiers(), "Shift") {
-		t.Errorf("Modifiers() offers Shift: %v", Modifiers())
+}
+
+func TestEveryScanCodeNamesOneKey(t *testing.T) {
+	named := 0
+	for name, k := range keys {
+		if k.scan == 0 {
+			continue
+		}
+		named++
+		if got, ok := byScanCode()[k.scan]; !ok || got != name {
+			t.Errorf("scan code %#x names %q, want %q", k.scan, got, name)
+		}
+	}
+	if len(byScanCode()) != named {
+		t.Errorf("%d keys have a scan code but only %d codes are distinct", named, len(byScanCode()))
 	}
 }
 
-func TestKeysNamedByScanCodeCanBeBound(t *testing.T) {
-	for code := range 0x200 {
-		if name, ok := KeyForScanCode(code); ok && !Supported(name) {
-			t.Errorf("scan code %#x names %q, which cannot be bound", code, name)
+func TestTyping(t *testing.T) {
+	for _, key := range []string{"A", "Z", "0", "9", "Semicolon", "Space", "Enter", "Tab", "Backspace", "Delete", "Left", "PageDown", "Numpad5", "NumpadAdd"} {
+		if !Typing(key) {
+			t.Errorf("Typing(%q) = false", key)
+		}
+	}
+	for _, key := range []string{"Pause", "F1", "F12", "Home", "End", "Insert", "Escape", "PrintScreen"} {
+		if Typing(key) {
+			t.Errorf("Typing(%q) = true", key)
+		}
+	}
+}
+
+func TestComboCheck(t *testing.T) {
+	tests := []struct {
+		combo Combo
+		ok    bool
+	}{
+		{Combo{Key: DefaultKey()}, true},
+		{Combo{Key: "Q", Mods: ModCtrl}, true},
+		{Combo{Key: "Q"}, false},
+		{Combo{Key: "Space"}, false},
+		{Combo{Key: "Space", Mods: ModAlt}, true},
+		{Combo{Key: ""}, false},
+		{Combo{Key: "NoSuchKey", Mods: ModCtrl}, false},
+	}
+	for _, tt := range tests {
+		if err := tt.combo.Check(); (err == nil) != tt.ok {
+			t.Errorf("%v.Check() = %v, want ok=%v", tt.combo, err, tt.ok)
+		}
+	}
+	if err := (Combo{Key: "Q"}).Check(); !errors.Is(err, ErrTypingKey) {
+		t.Errorf("a bare letter gives %v, want ErrTypingKey", err)
+	}
+}
+
+func TestLabel(t *testing.T) {
+	for name, want := range map[string]string{"Semicolon": ";", "Numpad7": "Num 7", "Q": "Q", "PageUp": "PgUp"} {
+		if got := Label(name); got != want {
+			t.Errorf("Label(%q) = %q, want %q", name, got, want)
 		}
 	}
 }

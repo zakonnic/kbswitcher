@@ -12,20 +12,6 @@ import (
 	"sync"
 )
 
-// keyCodes maps the portable key names to virtual key codes from Carbon's
-// Events.h. Mac keyboards have no Pause or Scroll Lock key; full-size Apple
-// keyboards do have F13 and above.
-var keyCodes = map[string]uint32{
-	"Insert": 0x72, // labelled Help on the keyboards that have it
-	"Home":   0x73,
-	"End":    0x77,
-	"F1":     0x7A, "F2": 0x78, "F3": 0x63, "F4": 0x76,
-	"F5": 0x60, "F6": 0x61, "F7": 0x62, "F8": 0x64,
-	"F9": 0x65, "F10": 0x6D, "F11": 0x67, "F12": 0x6F,
-	"F13": 0x69, "F14": 0x6B, "F15": 0x71, "F16": 0x6A,
-	"F17": 0x40, "F18": 0x4F, "F19": 0x50,
-}
-
 // Carbon modifier masks, as RegisterEventHotKey expects them.
 const (
 	cmdKey     = 0x0100
@@ -33,22 +19,6 @@ const (
 	optionKey  = 0x0800
 	controlKey = 0x1000
 )
-
-func keyCode(name string) (uint32, bool) {
-	code, ok := keyCodes[name]
-	return code, ok
-}
-
-// KeyForScanCode names the bindable key with the scan code GLFW reports, for
-// keys the toolkit has no name for. On macOS that code is the virtual key code.
-func KeyForScanCode(code int) (string, bool) {
-	for name, c := range keyCodes {
-		if int(c) == code {
-			return name, true
-		}
-	}
-	return "", false
-}
 
 // DefaultKey is the key bound when no configuration exists yet: Mac keyboards
 // have no Break key, and F12 is the closest thing that is free by default.
@@ -89,7 +59,7 @@ func Open() (*Manager, error) { return &Manager{}, nil }
 
 // Register binds a combination. The handler runs on a goroutine of its own.
 func (m *Manager) Register(combo Combo, handler func()) error {
-	code, ok := keyCode(combo.Key)
+	key, ok := keys[combo.Key]
 	if !ok {
 		return fmt.Errorf("hotkey: key %q is not available on this system", combo.Key)
 	}
@@ -104,7 +74,7 @@ func (m *Manager) Register(combo Combo, handler func()) error {
 	if err != nil {
 		return err
 	}
-	if status := C.kbs_register_hotkey(C.uint(code), C.uint(nativeModifiers(combo.Mods)), C.int(id)); status != 0 {
+	if status := C.kbs_register_hotkey(C.uint(key.code), C.uint(nativeModifiers(combo.Mods)), C.int(id)); status != 0 {
 		release(id)
 		return fmt.Errorf("hotkey: %s could not be bound, another application may already use it (code %d)",
 			combo, int(status))
