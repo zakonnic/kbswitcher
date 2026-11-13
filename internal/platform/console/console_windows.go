@@ -190,8 +190,8 @@ func pick(target window, consoles []found) (found, error) {
 		}
 	}
 	if len(matching) != 1 {
-		return found{}, fmt.Errorf("%w: %d consoles; %w; %d of them titled %q",
-			ErrAmbiguous, len(consoles), err, len(matching), target.title)
+		return found{}, fmt.Errorf("%w: %d consoles; %w; %d of them titled like the window",
+			ErrAmbiguous, len(consoles), err, len(matching))
 	}
 	return matching[0], nil
 }
@@ -294,7 +294,8 @@ func discover(target window, candidates []uint32) []found {
 		handle, _, _ := procGetConsoleWindow.Call()
 		if handle != 0 && !seen[handle] && hosts(target, handle) {
 			seen[handle] = true
-			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(), view: currentView()})
+			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(),
+				view: currentView(target.kind == Cascadia)})
 		}
 		detach()
 	}
@@ -418,8 +419,10 @@ func readCells(out windows.Handle, from, n, width int) string {
 	return windows.UTF16ToString(buf[:got])
 }
 
-// currentView reads the visible part of the attached console.
-func currentView() view {
+// currentView reads the size and the caret of the attached console and, with
+// rows set, the caret row and the rows above it: Windows Terminal is matched
+// to its focused pane by them, nothing else needs them.
+func currentView(rows bool) view {
 	out, err := openConsoleFile("CONOUT$")
 	if err != nil {
 		return view{}
@@ -435,6 +438,9 @@ func currentView() view {
 		lines:  info.Window.Bottom - info.Window.Top + 1,
 		caretX: info.CursorPosition.X - info.Window.Left,
 		caretY: info.CursorPosition.Y - info.Window.Top,
+	}
+	if !rows {
+		return v
 	}
 	width := int(info.Size.X)
 	first := max(info.CursorPosition.Y-matchRowsAbove, 0)
