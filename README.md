@@ -5,10 +5,14 @@
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)](#installation)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**Fixes text typed in the wrong keyboard layout. One key, and nothing else you type ever reaches it.**
+**Rewrites text that was typed with the wrong keyboard layout.**
 
 **No keylogger.** kbswitcher does not watch what you type. The operating system wakes it only when its hotkey is
 pressed; no other keystroke ever reaches the process, and nothing is buffered. See [How it works](#how-it-works).
+
+<p align="center">
+  <img src="docs/about.png" alt="The kbswitcher About window: hotkeys, installed layouts and the update check" width="640">
+</p>
 
 ## Table of Contents
 

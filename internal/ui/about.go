@@ -59,7 +59,7 @@ func (a *App) newAbout() *aboutWindow {
 	title := container.New(column{},
 		label(buildinfo.Name, 26, theme.Color(theme.ColorNameForeground), true),
 		gap(0, 4),
-		label("Fixes text typed in the wrong layout.", 12.5, theme.Color(colorNameSecondary), false),
+		label("Rewrites text that was typed with the wrong keyboard layout.", 12.5, theme.Color(colorNameSecondary), false),
 		gap(0, 8),
 		container.NewHBox(newChip(versionText(), versionStyle)),
 	)
