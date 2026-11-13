@@ -169,8 +169,18 @@ make dist           # package bin/ and append to bin/checksums.txt, as a release
 `tools/stand` opens a real console, Windows Terminal, an isolated VS Code or Notepad, types a word, converts it and
 checks what the window shows. `go run ./tools/stand -help` lists its options.
 
-A release is a tag `vX.Y.Z` with one archive per platform from `make dist` and the `checksums.txt` beside them; the
-updater refuses a release without that file.
+### Releasing
+
+```sh
+make release VERSION=1.2.3
+```
+
+On a clean `main`, this vets and tests, tags `v1.2.3` (refusing a version not newer than the last tag), packages the
+archive with `checksums.txt`, pushes `main` and the tag, and prints what is left to do on GitHub: publish a release
+from the tag with both files attached. The updater reads only the latest published release; drafts and pre-releases
+are invisible to it, and it refuses a release without `checksums.txt`. The build needs cgo, so each platform's archive
+is made on that platform with `make dist VERSION=v1.2.3` and added to the same release, its line appended to the same
+`checksums.txt`. `make tag`, `make untag` and `make push` are the steps on their own.
 
 ## Security
 

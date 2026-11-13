@@ -7,17 +7,27 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 BINARY  := kbswitcher
-PACKAGE := $(BINARY)_$(VERSION)_$(GOOS)_$(GOARCH).tar.gz
+ARCHIVE := tar.gz
 # -H windowsgui keeps the program from opening a console window.
 ifeq ($(GOOS),windows)
 	BINARY   := kbswitcher.exe
-	PACKAGE  := kbswitcher_$(VERSION)_$(GOOS)_$(GOARCH).zip
+	ARCHIVE  := zip
 	GUIFLAGS := -H windowsgui
 	# bsdtar writes zip, GNU tar cannot; on Windows Git's sh finds GNU tar
 	# first, so Windows' own tar is named.
 	WINROOT  := $(or $(SystemRoot),$(SYSTEMROOT))
 	ZIPTAR   := $(if $(WINROOT),$(subst \,/,$(WINROOT))/System32/tar.exe,tar)
 endif
+package = kbswitcher_$(1)_$(GOOS)_$(GOARCH).$(ARCHIVE)
+PACKAGE = $(call package,$(VERSION))
+
+# Release targets take VERSION=X.Y.Z (the leading v is optional) and tag vX.Y.Z.
+TAG     := v$(patsubst v%,%,$(VERSION))
+REPO    := $(patsubst github.com/%,%,$(MODULE))
+define need-version
+	@test "$(origin VERSION)" != file || { echo "VERSION is required, e.g. make $@ VERSION=1.2.3"; exit 1; }
+	@echo "$(TAG)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "VERSION must look like 1.2.3, not $(VERSION)"; exit 1; }
+endef
 
 LDFLAGS := -s -w $(GUIFLAGS) \
 	-X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
@@ -125,10 +135,48 @@ endif
 		mv checksums.new checksums.txt
 	@echo "packaged $(BINDIR)/$(PACKAGE)"
 
+# The updater only offers a newer version, so tag refuses an older one.
+.PHONY: tag
+tag: ## Tag HEAD of main as vVERSION (make tag VERSION=1.2.3), then 'make push'
+	$(need-version)
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "Error: tag on main, not $$(git rev-parse --abbrev-ref HEAD)."; exit 1; }
+	@test -z "$$(git status --porcelain --untracked-files=no)" || { \
+		echo "Error: uncommitted changes. The tag would point at the last commit, not at what you see."; \
+		exit 1; \
+	}
+	@! git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { echo "Error: tag $(TAG) already exists."; exit 1; }
+	@last=$$(git tag --list 'v*' --sort=-v:refname | head -1); \
+	if [ -n "$$last" ] && [ "$$(printf '%s\n%s\n' "$$last" "$(TAG)" | sort -V | tail -1)" != "$(TAG)" ]; then \
+		echo "Error: $(TAG) is not newer than $$last."; \
+		exit 1; \
+	fi
+	git tag -a $(TAG) -m "$(TAG)"
+
+.PHONY: untag
+untag: ## Delete the local tag vVERSION (make untag VERSION=1.2.3)
+	$(need-version)
+	git tag -d $(TAG)
+
 .PHONY: push
 push: ## Push main and the tags to origin (a release is cut from main)
 	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "Error: push from main, not $$(git rev-parse --abbrev-ref HEAD)."; exit 1; }
 	git push origin main --tags
+
+.PHONY: release
+release: ## Test, tag, package and push vVERSION, then print the GitHub steps (make release VERSION=1.2.3)
+	$(need-version)
+	"$(MAKE)" vet test
+	"$(MAKE)" tag VERSION=$(TAG)
+	rm -f $(BINDIR)/checksums.txt
+	"$(MAKE)" dist VERSION=$(TAG)
+	"$(MAKE)" push
+	@echo
+	@echo "$(TAG) is pushed. Publish it on GitHub:"
+	@echo "  1. Open https://$(MODULE)/releases/new?tag=$(TAG)"
+	@echo "  2. Title: $(TAG). Attach $(BINDIR)/$(call package,$(TAG)) and $(BINDIR)/checksums.txt"
+	@echo "  3. Leave 'Set as a pre-release' off and press 'Publish release':"
+	@echo "     the updater sees neither drafts nor pre-releases."
+	@echo "  4. Check: curl -s https://api.github.com/repos/$(REPO)/releases/latest | grep tag_name"
 
 .PHONY: clean
 clean: ## Remove the build output
