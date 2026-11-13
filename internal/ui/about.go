@@ -166,10 +166,7 @@ func warningRows(warnings []string) []fyne.CanvasObject {
 }
 
 func repositoryLink() fyne.CanvasObject {
-	address, err := url.Parse("https://github.com/" + buildinfo.Repository)
-	if err != nil {
-		return label(buildinfo.Repository, 12, theme.Color(colorNameSecondary), false)
-	}
+	address, _ := url.Parse(buildinfo.RepositoryURL) // a constant, checked by TestRepositoryURL
 	return newLink("GitHub", address)
 }
 

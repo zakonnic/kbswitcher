@@ -1,5 +1,5 @@
-// Package buildinfo holds the identity of the running binary. Version, Commit,
-// Repository and APIBaseURL are overridden at link time by the Makefile.
+// Package buildinfo holds the identity of the running binary. Version and
+// Commit are set at link time by the Makefile.
 package buildinfo
 
 import "fmt"
@@ -12,14 +12,16 @@ const (
 	// ID is the reverse-DNS identifier: macOS bundle identifier, Fyne
 	// preferences key, autostart entry name, instance lock name.
 	ID = "com.zakonnic.kbswitcher"
+	// Repository is the "owner/repo" the update check queries. A constant, so
+	// no -ldflags can point the updater elsewhere.
+	Repository    = "zakonnic/kbswitcher"
+	RepositoryURL = "https://github.com/" + Repository
 )
 
 // Values injected with -ldflags "-X ...".
 var (
 	Version = "dev"
 	Commit  = "unknown"
-	// Repository is the "owner/repo" the update check queries.
-	Repository = "zakonnic/kbswitcher"
 	// APIBaseURL is the GitHub API root, overridable for a GitHub Enterprise
 	// instance.
 	APIBaseURL = "https://api.github.com"

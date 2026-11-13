@@ -131,6 +131,8 @@ updates** in the About window. Nothing is contacted at start-up or on a timer.
   HTTPS;
 - one host, the one built into the binary (`buildinfo.APIBaseURL`, GitHub by
   default, overridable at build time for an internal instance);
+- one repository, `buildinfo.Repository`, a constant that no build flag can
+  change;
 - size limits on every response (1 MB metadata, 64 KB checksums, 128 MB
   archive);
 - a SHA-256 check of the downloaded archive against the `checksums.txt` file

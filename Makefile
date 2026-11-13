@@ -117,6 +117,11 @@ endif
 	cd $(BINDIR) && $(SHA256) $(PACKAGE) >> checksums.txt
 	@echo "packaged $(BINDIR)/$(PACKAGE)"
 
+.PHONY: push
+push: ## Push main and the tags to origin (a release is cut from main)
+	@test "$$(git rev-parse --abbrev-ref HEAD)" = main || { echo "Error: push from main, not $$(git rev-parse --abbrev-ref HEAD)."; exit 1; }
+	git push origin main --tags
+
 .PHONY: clean
 clean: ## Remove the build output
 	rm -rf $(BINDIR)
