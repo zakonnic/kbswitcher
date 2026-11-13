@@ -1,13 +1,9 @@
 package ui
 
 import (
-	"bytes"
 	"image"
 	"image/color"
-	"image/draw"
-	"image/png"
 	"math"
-	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -18,7 +14,6 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"github.com/zakonnic/kbswitcher/internal/assets"
 	"github.com/zakonnic/kbswitcher/internal/platform/window"
 )
 
@@ -211,29 +206,13 @@ func headerGradient(x, y, w, h int) color.NRGBA {
 	return headerStops[len(headerStops)-1].color
 }
 
-// logoTile is the application icon in white on a translucent tile.
-func logoTile(size, iconSize, radius float32) fyne.CanvasObject {
-	face := newShape(radius)
-	face.set(rgba(0xFF, 0xFF, 0xFF, 0x14), rgba(0xFF, 0xFF, 0xFF, 0x1F), false)
-	icon := canvas.NewImageFromImage(whiteIcon())
-	icon.FillMode = canvas.ImageFillContain
-	icon.SetMinSize(fyne.NewSquareSize(iconSize))
-	return container.NewStack(gap(size, size), face.Raster, container.NewCenter(icon))
-}
-
-// whiteIcon is the black application icon with every pixel made white.
-var whiteIcon = sync.OnceValue(func() image.Image {
-	src, err := png.Decode(bytes.NewReader(assets.IconPNG))
-	if err != nil {
-		return image.NewNRGBA(image.Rect(0, 0, 1, 1))
-	}
-	img := image.NewNRGBA(src.Bounds())
-	draw.Draw(img, img.Bounds(), src, src.Bounds().Min, draw.Src)
-	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i], img.Pix[i+1], img.Pix[i+2] = 0xFF, 0xFF, 0xFF
-	}
+// logo is the application icon.
+func logo(size float32) fyne.CanvasObject {
+	img := canvas.NewImageFromResource(icon())
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSquareSize(size))
 	return img
-})
+}
 
 // closeButton is the round button with a cross in the corner of a header.
 type closeButton struct {

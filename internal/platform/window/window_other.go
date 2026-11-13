@@ -13,3 +13,5 @@ const Frameless = false
 func Frame(uintptr, color.Color) (int, error) { return 0, nil }
 
 func Drag(uintptr) {}
+
+func IconSizes() (small, large int) { return 0, 0 }

@@ -62,7 +62,7 @@ func (a *App) newAbout() *aboutWindow {
 		gap(0, 8),
 		container.NewHBox(newChip(versionText(), versionStyle)),
 	)
-	hero := header(150, 24, 26, line(18, logoTile(72, 50, 14), title))
+	hero := header(150, 24, 26, line(18, logo(72), title))
 
 	body := []fyne.CanvasObject{
 		container.New(columns{12}, w.hotkeys, titledCard("Layouts", layoutRows(a.options.Layouts)...)),

@@ -70,7 +70,7 @@ func (a *App) newSettings() *settingsWindow {
 	fg := theme.Color(theme.ColorNameForeground)
 	text := theme.Size(theme.SizeNameText)
 	hero := header(0, 12, 16, container.NewBorder(nil, nil,
-		line(10, logoTile(28, 19, 7), label(buildinfo.Name+" Settings", 14, fg, true)),
+		line(10, logo(28), label(buildinfo.Name+" Settings", 14, fg, true)),
 		newCloseButton(hide)))
 
 	body := container.New(column{},

@@ -72,6 +72,12 @@ tidy: ## Tidy go.mod and go.sum
 .PHONY: check
 check: fmt vet test ## Format, vet and test
 
+# The linker takes the .syso next to main.go into every windows/amd64 build;
+# it is committed, so only a change of icon.ico calls for this.
+.PHONY: syso
+syso: ## Rebuild the Windows icon resource from internal/assets/icon.ico (needs windres)
+	echo '1 ICON "internal/assets/icon.ico"' | windres -O coff -F pe-x86-64 -o cmd/kbswitcher/rsrc_windows_amd64.syso
+
 .PHONY: bundle
 bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 	@test "$(GOOS)" = "darwin" || (echo "bundle is only meaningful on macOS"; exit 1)

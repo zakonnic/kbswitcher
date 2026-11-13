@@ -89,7 +89,9 @@ func (a *App) Run() (restart bool) {
 		fyne.NewMenuItemSeparator(),
 		quit,
 	))
-	desk.SetSystemTrayIcon(icon())
+	// The icon sizes are only right once the toolkit has made the process
+	// aware of the display scale, which it does on start.
+	a.fyne.Lifecycle().SetOnStarted(func() { desk.SetSystemTrayIcon(trayIcon()) })
 
 	a.fyne.Run()
 	return a.restart

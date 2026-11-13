@@ -19,9 +19,12 @@ var (
 	procReleaseCapture = user32.NewProc("ReleaseCapture")
 	procSendMessage    = user32.NewProc("SendMessageW")
 	procPostMessage    = user32.NewProc("PostMessageW")
+	procGetMetrics     = user32.NewProc("GetSystemMetrics")
 )
 
 const (
+	smCxIcon        = 11
+	smCxSmIcon      = 49
 	wmNCLButtonDown = 0x00A1
 	wmLButtonUp     = 0x0202
 	htCaption       = 2
@@ -62,4 +65,12 @@ func Drag(hwnd uintptr) {
 	_, _, _ = procSendMessage.Call(hwnd, wmNCLButtonDown, htCaption, 0)
 	// The move loop swallowed the release; the window still waits for it.
 	_, _, _ = procPostMessage.Call(hwnd, wmLButtonUp, 0, 0)
+}
+
+// IconSizes returns the width in pixels of the small icons the notification
+// area shows and of the large icons the system loads them at.
+func IconSizes() (small, large int) {
+	s, _, _ := procGetMetrics.Call(smCxSmIcon)
+	l, _, _ := procGetMetrics.Call(smCxIcon)
+	return int(s), int(l)
 }
