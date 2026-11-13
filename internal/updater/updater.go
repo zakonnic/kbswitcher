@@ -351,14 +351,26 @@ var (
 	}
 )
 
+// matchesToken reports whether one of the aliases occurs in name with no
+// letter on either side: "win" does not match "darwin" but matches "win64".
 func matchesToken(name string, aliases []string) bool {
 	for _, alias := range aliases {
-		if strings.Contains(name, alias) {
-			return true
+		for from := 0; ; {
+			i := strings.Index(name[from:], alias)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(alias)
+			if (start == 0 || !isLetter(name[start-1])) && (end == len(name) || !isLetter(name[end])) {
+				return true
+			}
+			from = start + 1
 		}
 	}
 	return false
 }
+
+func isLetter(c byte) bool { return 'a' <= c && c <= 'z' }
 
 func isArchive(name string) bool {
 	return strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz")

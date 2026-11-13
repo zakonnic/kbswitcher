@@ -13,6 +13,10 @@ ifeq ($(GOOS),windows)
 	BINARY   := kbswitcher.exe
 	PACKAGE  := kbswitcher_$(VERSION)_$(GOOS)_$(GOARCH).zip
 	GUIFLAGS := -H windowsgui
+	# bsdtar writes zip, GNU tar cannot; on Windows Git's sh finds GNU tar
+	# first, so Windows' own tar is named.
+	WINROOT  := $(or $(SystemRoot),$(SYSTEMROOT))
+	ZIPTAR   := $(if $(WINROOT),$(subst \,/,$(WINROOT))/System32/tar.exe,tar)
 endif
 
 LDFLAGS := -s -w $(GUIFLAGS) \
@@ -104,17 +108,21 @@ bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 		'</plist>' > $(APP)/Contents/Info.plist
 	@echo "built $(APP)"
 
+# A repeated dist replaces the archive's line in checksums.txt: the updater
+# trusts the first one.
 .PHONY: dist
-dist: build ## Package the build and write checksums.txt, as a release expects
+dist: build ## Package the build and record its checksum in checksums.txt, as a release expects
 	@mkdir -p $(BINDIR)/dist
 	@cp $(BINDIR)/$(BINARY) $(BINDIR)/dist/$(BINARY)
 ifeq ($(GOOS),windows)
-	cd $(BINDIR)/dist && tar -a -c -f ../$(PACKAGE) $(BINARY)
+	cd $(BINDIR)/dist && "$(ZIPTAR)" -a -c -f ../$(PACKAGE) $(BINARY)
 else
 	cd $(BINDIR)/dist && tar -czf ../$(PACKAGE) $(BINARY)
 endif
 	@rm -rf $(BINDIR)/dist
-	cd $(BINDIR) && $(SHA256) $(PACKAGE) >> checksums.txt
+	cd $(BINDIR) && touch checksums.txt && \
+		{ awk -v f=$(PACKAGE) '{ n = $$2; sub(/^\*/, "", n) } n != f' checksums.txt; $(SHA256) $(PACKAGE); } > checksums.new && \
+		mv checksums.new checksums.txt
 	@echo "packaged $(BINDIR)/$(PACKAGE)"
 
 .PHONY: push

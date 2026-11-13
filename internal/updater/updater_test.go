@@ -97,6 +97,33 @@ func TestAssetForThisMachine(t *testing.T) {
 	}
 }
 
+func TestMatchesToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		aliases []string
+		want    bool
+	}{
+		{"kbswitcher_v1.0.0_windows_amd64.zip", osAliases["windows"], true},
+		{"kbswitcher_v1.0.0_darwin_amd64.tar.gz", osAliases["windows"], false},
+		{"kbswitcher-win-x64.zip", osAliases["windows"], true},
+		{"kbswitcher-win64.zip", osAliases["windows"], true},
+		{"kbswitcher_windows64.zip", osAliases["windows"], true},
+		{"win.zip", osAliases["windows"], true},
+		{"kbswitcher-win", osAliases["windows"], true},
+		{"swin_win.zip", osAliases["windows"], true},
+		{"swin_twins.zip", osAliases["windows"], false},
+		{"kbswitcher_v1.0.0_darwin_arm64.tar.gz", osAliases["darwin"], true},
+		{"kbswitcher-macos.tar.gz", osAliases["darwin"], true},
+		{"kbswitcher_linux_x86_64.tar.gz", archAliases["amd64"], true},
+		{"kbswitcher_linux_arm64.tar.gz", archAliases["amd64"], false},
+	}
+	for _, tt := range tests {
+		if got := matchesToken(tt.name, tt.aliases); got != tt.want {
+			t.Errorf("matchesToken(%q, %v) = %v, want %v", tt.name, tt.aliases, got, tt.want)
+		}
+	}
+}
+
 func TestExtractBinary(t *testing.T) {
 	const content = "the new program"
 
