@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"runtime"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -209,11 +210,25 @@ type updatePanel struct {
 	button *button
 }
 
+// lastUpdateKey is the preference holding the local date of the last
+// installed update.
+const lastUpdateKey = "lastUpdate"
+
+// idleStatus is what the pill says before a check: when the last update was
+// installed, if one ever was.
+func idleStatus(prefs fyne.Preferences) string {
+	updated, err := time.Parse(time.DateOnly, prefs.String(lastUpdateKey))
+	if err != nil {
+		return "Not checked"
+	}
+	return "Updated " + updated.Format("2 Jan 2006")
+}
+
 func newUpdatePanel(app *App, window fyne.Window) *updatePanel {
 	p := &updatePanel{
 		app:    app,
 		window: window,
-		status: newChip("Not checked", pillNeutral),
+		status: newChip(idleStatus(app.fyne.Preferences()), pillNeutral),
 		button: newButton("Check for updates", nil),
 	}
 	if app.options.Updater == nil {
@@ -289,6 +304,7 @@ func (p *updatePanel) install(release updater.Release) {
 				return
 			}
 			p.app.log.Info("update installed", "version", release.Version, "path", path)
+			p.app.fyne.Preferences().SetString(lastUpdateKey, time.Now().Format(time.DateOnly))
 			p.show(release.Version+" installed", pillOK)
 
 			dialog.ShowConfirm("Restart now?",
