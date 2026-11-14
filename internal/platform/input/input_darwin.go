@@ -11,6 +11,7 @@ import "errors"
 // Virtual key codes from Carbon's Events.h. They name positions on the
 // keyboard and do not change with the layout.
 const (
+	keyX     = 0x07
 	keyC     = 0x08
 	keyV     = 0x09
 	keyLeft  = 0x7B
@@ -21,7 +22,6 @@ const (
 const (
 	flagShift   = 0x00020000
 	flagControl = 0x00040000
-	flagOption  = 0x00080000
 	flagCommand = 0x00100000
 )
 
@@ -54,9 +54,9 @@ func Permission(prompt bool) error {
 // application.
 func (k *Keyboard) ReleaseModifiers() error { return nil }
 
-// SelectWordLeft presses Option+Shift+Left the given number of times.
-func (k *Keyboard) SelectWordLeft(times int) error {
-	return k.send(keyLeft, flagOption|flagShift, times)
+// SelectToLineStart presses Command+Shift+Left: Home scrolls on a Mac.
+func (k *Keyboard) SelectToLineStart() error {
+	return k.send(keyLeft, flagCommand|flagShift, 1)
 }
 
 // SelectCharsLeft presses Shift+Left n times.
@@ -69,8 +69,19 @@ func (k *Keyboard) CollapseSelectionRight() error {
 	return k.send(keyRight, 0, 1)
 }
 
-// Copy presses Command+C.
-func (k *Keyboard) Copy() error { return k.send(keyC, flagCommand, 1) }
+// Nudge presses Left, or Right with back set.
+func (k *Keyboard) Nudge(back bool) error {
+	if back {
+		return k.send(keyRight, 0, 1)
+	}
+	return k.send(keyLeft, 0, 1)
+}
+
+// Copy presses Command+C, which no shell takes for an interrupt.
+func (k *Keyboard) Copy(bool) error { return k.send(keyC, flagCommand, 1) }
+
+// Cut presses Command+X.
+func (k *Keyboard) Cut() error { return k.send(keyX, flagCommand, 1) }
 
 // Paste presses Command+V.
 func (k *Keyboard) Paste() error { return k.send(keyV, flagCommand, 1) }

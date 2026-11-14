@@ -20,9 +20,12 @@ const (
 	vkShift    = 0x10
 	vkControl  = 0x11
 	vkAlt      = 0x12
+	vkHome     = 0x24
+	vkInsert   = 0x2D
 	vkLeft     = 0x25
 	vkRight    = 0x27
 	vkC        = 0x43
+	vkX        = 0x58
 	vkV        = 0x56
 	vkLWin     = 0x5B
 	vkRWin     = 0x5C
@@ -99,9 +102,9 @@ func Permission(bool) error { return nil }
 // next.
 func (k *Keyboard) ReleaseModifiers() error { return k.send(releases()) }
 
-// SelectWordLeft presses Ctrl+Shift+Left the given number of times.
-func (k *Keyboard) SelectWordLeft(times int) error {
-	return k.send(withModifiers([]uint16{vkControl, vkShift}, repeat(vkLeft, times, keyeventfExtended)))
+// SelectToLineStart presses Shift+Home.
+func (k *Keyboard) SelectToLineStart() error {
+	return k.send(withModifiers([]uint16{vkShift}, repeat(vkHome, 1, keyeventfExtended)))
 }
 
 // SelectCharsLeft presses Shift+Left n times.
@@ -115,9 +118,27 @@ func (k *Keyboard) CollapseSelectionRight() error {
 	return k.send(withModifiers(nil, repeat(vkRight, 1, keyeventfExtended)))
 }
 
-// Copy presses Ctrl+C.
-func (k *Keyboard) Copy() error {
+// Nudge presses Left, or Right with back set.
+func (k *Keyboard) Nudge(back bool) error {
+	key := uint16(vkLeft)
+	if back {
+		key = vkRight
+	}
+	return k.send(withModifiers(nil, repeat(key, 1, keyeventfExtended)))
+}
+
+// Copy presses Ctrl+C, or with gentle set Ctrl+Insert, which copies as well
+// and which no shell takes for an interrupt.
+func (k *Keyboard) Copy(gentle bool) error {
+	if gentle {
+		return k.send(withModifiers([]uint16{vkControl}, repeat(vkInsert, 1, keyeventfExtended)))
+	}
 	return k.send(withModifiers([]uint16{vkControl}, repeat(vkC, 1, 0)))
+}
+
+// Cut presses Ctrl+X.
+func (k *Keyboard) Cut() error {
+	return k.send(withModifiers([]uint16{vkControl}, repeat(vkX, 1, 0)))
 }
 
 // Paste presses Ctrl+V.

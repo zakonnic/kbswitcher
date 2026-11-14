@@ -45,11 +45,17 @@ func (c *fakeConsole) Close() error { c.closed = true; return nil }
 type fakeTerminal struct {
 	console *fakeConsole
 	err     error
+	// shy makes the terminal deny having a console while a selection is
+	// being converted, as a window that is an editor first does.
+	shy bool
 }
 
-func (t *fakeTerminal) Open() (Console, error) {
+func (t *fakeTerminal) Open(selection bool) (Console, error) {
 	if t.err != nil {
 		return nil, t.err
+	}
+	if t.shy && selection {
+		return nil, ErrNoConsole
 	}
 	return t.console, nil
 }
@@ -62,6 +68,7 @@ func consoleSwitcher(t *testing.T, terminal Terminal, text string) (*Switcher, *
 	editor := newEditor(text, clipboard)
 	options := DefaultOptions()
 	options.KeyDelay = 0
+	options.PasteSettle = 0
 
 	deps := Deps{
 		Layouts:   &fakeLayouts{active: layouts[0].ID()},
@@ -158,6 +165,34 @@ func TestConvertLastWordInAConsoleStopsAtTheCaret(t *testing.T) {
 	}
 	if shell.input != "слово tail" {
 		t.Errorf("the input line is %q, want %q", shell.input, "слово tail")
+	}
+}
+
+func TestWithNothingSelectedAnEditorsTerminalGetsItsLineConverted(t *testing.T) {
+	// The window is not asked about its focus while a selection may be at
+	// stake; once the cut has come back empty, it is.
+	shell := &fakeConsole{input: "ghbdtn ckjdj"}
+	s, _, editor := consoleSwitcher(t, &fakeTerminal{console: shell, shy: true}, "")
+	editor.deaf = true
+
+	if err := s.ConvertSelection(t.Context()); err != nil {
+		t.Fatalf("ConvertSelection: %v", err)
+	}
+	if shell.input != "привет слово" {
+		t.Errorf("the input line is %q, want %q", shell.input, "привет слово")
+	}
+}
+
+func TestASelectionInAnEditorWithATerminalIsCutAndPasted(t *testing.T) {
+	shell := &fakeConsole{input: "keep"}
+	s, _, editor := consoleSwitcher(t, &fakeTerminal{console: shell, shy: true}, "ckjdj")
+	editor.selectFrom(0)
+
+	if err := s.ConvertSelection(t.Context()); err != nil {
+		t.Fatalf("ConvertSelection: %v", err)
+	}
+	if editor.String() != "слово" || shell.input != "keep" {
+		t.Errorf("editor %q, shell %q; want the editor converted and the shell left alone", editor.String(), shell.input)
 	}
 }
 

@@ -115,17 +115,20 @@ up only when one of them is pressed.
 
 When the hotkey fires, it does what you would do by hand:
 
-1. extend the selection to cover the last word (skipped for the selection hotkey — you have already selected the
-   text);
-2. copy;
-3. work out which layout the text was typed in, and rewrite it for the next one;
-4. select exactly the word and copy it once more, which waits for editors that take a selection in late, such as
-   the input boxes of Claude and ChatGPT;
-5. paste the result and give your clipboard back.
+1. select from the caret to the start of the line, with one key press, and copy (skipped for the selection hotkey —
+   you have already selected the text);
+2. work out which layout the last word was typed in, and rewrite it for the next one;
+3. select exactly that word and cut it;
+4. paste the result where the word was, and give your clipboard back.
+
+The line is selected by a single key press and the word is cut rather than pasted over because of editors driven by
+scripts, such as the input boxes of Claude and ChatGPT: they learn of a keyboard selection late, and until then copy
+one range and paste over another. A selection made by one press cannot be caught halfway, and what a cut puts on the
+clipboard is what it removed.
 
 On Windows, what kbswitcher puts on the clipboard along the way is marked so that clipboard history and cloud
-clipboard sync leave it out, and the clipboard is given back the moment the application has read the paste. A
-Windows console skips the clipboard altogether: its input line is read and rewritten in place.
+clipboard sync leave it out, and the clipboard is given back a quarter of a second after the pasted text was read
+off it. A Windows console skips the clipboard altogether: its input line is read and rewritten in place.
 
 The layouts come from the same tables the operating system uses to turn key presses into characters: `ToUnicodeEx`
 on Windows, `UCKeyTranslate` on macOS, the XKB keymap on X11.
@@ -133,15 +136,17 @@ on Windows, `UCKeyTranslate` on macOS, the XKB keymap on X11.
 ## Limitations
 
 - **Terminals kbswitcher cannot read.** Git Bash in its own window (mintty) has no Windows console at all, and there
-  the hotkey does nothing. A JetBrains IDE does not say whether its terminal pane has the focus, so the hotkey takes
-  the clipboard path there, which a terminal pane does not answer. Two terminals of one editor that are the same
-  size and have their carets on the same cell cannot be told apart, and neither is touched. On macOS and Linux
-  every terminal takes the clipboard path.
+  the hotkey does nothing. A JetBrains IDE, or a terminal that draws its own window, does not say where its focus
+  is, so kbswitcher presses Left and Right once to see whether a shell moves its caret; with the focus in the IDE's
+  editor that costs a tenth of a second. On macOS and Linux every terminal takes the clipboard path.
+- **The last word is looked for on the caret's line only.** With the caret at the very start of a line the hotkey
+  does nothing.
 - **Selections in a terminal.** A selection made with the mouse belongs to the terminal window and no shell knows of
   it, so `Shift`+hotkey converts what the shell itself shows as selected (`Shift`+arrows in PowerShell), and the
-  whole input line otherwise.
+  whole input line otherwise. In the terminal of a JetBrains IDE the whole line takes most of a second, because the
+  window is tried as an editor first.
 - **Formatting.** The replacement is pasted as plain text. In a rich text editor the word that was replaced loses its
-  formatting; the rest of the line does not, because the selection is narrowed to the word before pasting.
+  formatting; the rest of the line does not, because only the word is cut.
 - **Characters that need AltGr.** Only unshifted and shifted key presses are reproduced. Anything typed with a third
   or fourth level is copied through unchanged.
 - **Clipboard formats other than text, rich text, images and file lists** are not restored after a conversion, and

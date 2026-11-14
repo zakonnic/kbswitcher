@@ -34,6 +34,10 @@ var (
 	// ErrAmbiguous means the host has several consoles and none of them can be
 	// told apart, so none is touched.
 	ErrAmbiguous = errors.New("the console of the focused pane cannot be identified")
+	// ErrShells comes with ErrNotConsole when the window runs shells and
+	// nothing showed that the focus is on one of them. It may be all the
+	// same: on a shell with an empty input line, or on a program in it.
+	ErrShells = errors.New("shells run under the window")
 
 	errNoWindow = errors.New("no focused window")
 )
@@ -86,16 +90,15 @@ type Session struct {
 
 // Open borrows the console of the shell behind the focused window. It fails
 // with ErrNotConsole when the window is not a terminal, and with another error
-// when it is one that cannot be worked with.
-func Open() (*Session, error) {
+// when it is one that cannot be worked with. probe is used for a window that
+// runs shells and does not say whether one of them has the focus; selection
+// says that a selection is being converted, which no probe leaves as it was.
+func Open(probe Probe, selection bool) (*Session, error) {
 	target, err := foreground()
 	if err != nil {
 		return nil, err
 	}
-	switch target.kind {
-	case NotTerminal:
-		return nil, fmt.Errorf("%w: window class %s", ErrNotConsole, target.class)
-	case Mintty:
+	if target.kind == Mintty {
 		return nil, errors.New("mintty has no Windows console")
 	}
 
@@ -105,7 +108,7 @@ func Open() (*Session, error) {
 	}
 
 	attachMu.Lock()
-	session, err := open(target, processes.below(target.pid))
+	session, err := open(target, processes.below(target.pid), probe, selection)
 	if err != nil {
 		attachMu.Unlock()
 		return nil, err
@@ -119,6 +122,9 @@ type found struct {
 	pid    uint32
 	window uintptr // the console window, which identifies the console itself
 	title  string
+	// caret is where the caret was in the screen buffer when the console was
+	// found.
+	caret windows.Coord
 	view
 }
 
@@ -131,17 +137,17 @@ type view struct {
 	rows        []string
 }
 
-func open(target window, candidates []uint32) (*Session, error) {
+func open(target window, candidates []uint32, probe Probe, selection bool) (*Session, error) {
 	consoles := discover(target, candidates)
 	if len(consoles) == 0 {
-		if target.kind == Chromium {
-			return nil, fmt.Errorf("%w: %s runs no terminal", ErrNotConsole, target.class)
+		if target.kind == Conhost || target.kind == Cascadia {
+			// A terminal still: the clipboard path would cancel or copy the
+			// shell's line, so the hotkey does nothing instead.
+			return nil, fmt.Errorf("nothing under %s owns a console", target.class)
 		}
-		// A terminal still: the clipboard path would cancel or copy the
-		// shell's line, so the hotkey does nothing instead.
-		return nil, fmt.Errorf("nothing under %s owns a console", target.class)
+		return nil, fmt.Errorf("%w: %s runs no terminal", ErrNotConsole, target.class)
 	}
-	console, err := pick(target, consoles)
+	console, err := pick(target, consoles, probe, selection)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +155,20 @@ func open(target window, candidates []uint32) (*Session, error) {
 }
 
 // pick finds the console of the pane that has the focus.
-func pick(target window, consoles []found) (found, error) {
+func pick(target window, consoles []found, probe Probe, selection bool) (found, error) {
+	if target.kind == JetBrains || target.kind == Other {
+		// No pair of keys leaves every selection as it was: the arrows drop
+		// it, and with Shift they change one that ends at the start of the
+		// text.
+		if selection {
+			return found{}, fmt.Errorf("%w: %w; a selection in %s is not probed", ErrNotConsole, ErrShells, target.class)
+		}
+		console, err := byProbe(consoles, probe)
+		if errors.Is(err, errNoAnswer) {
+			return found{}, fmt.Errorf("%w: %w; %w", ErrNotConsole, ErrShells, err)
+		}
+		return console, err
+	}
 	if target.kind == Chromium {
 		// The console is ahead of the terminal that renders it, so a caret
 		// that does not match yet is given a moment to catch up.
@@ -163,8 +182,21 @@ func pick(target window, consoles []found) (found, error) {
 				return found{}, fmt.Errorf("%w: the focus is on %q", ErrNotConsole, f.class)
 			}
 			console, err := byCaret(f, consoles)
-			if err == nil || !time.Now().Before(deadline) {
-				return console, err
+			if err == nil {
+				return console, nil
+			}
+			if !time.Now().Before(deadline) {
+				if selection {
+					return found{}, err
+				}
+				// Terminals of the same size with their carets on the same
+				// cell: the one that has the focus answers a key. The focus
+				// is on a terminal, so no answer is no reason for the
+				// clipboard path.
+				if console, probed := byProbe(consoles, probe); probed == nil {
+					return console, nil
+				}
+				return found{}, err
 			}
 			time.Sleep(xtermLagPoll)
 		}
@@ -294,8 +326,8 @@ func discover(target window, candidates []uint32) []found {
 		handle, _, _ := procGetConsoleWindow.Call()
 		if handle != 0 && !seen[handle] && hosts(target, handle) {
 			seen[handle] = true
-			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(),
-				view: currentView(target.kind == Cascadia)})
+			view, caret := currentView(target.kind == Cascadia)
+			consoles = append(consoles, found{pid: pid, window: handle, title: consoleTitle(), caret: caret, view: view})
 		}
 		detach()
 	}
@@ -422,16 +454,16 @@ func readCells(out windows.Handle, from, n, width int) string {
 // currentView reads the size and the caret of the attached console and, with
 // rows set, the caret row and the rows above it: Windows Terminal is matched
 // to its focused pane by them, nothing else needs them.
-func currentView(rows bool) view {
+func currentView(rows bool) (view, windows.Coord) {
 	out, err := openConsoleFile("CONOUT$")
 	if err != nil {
-		return view{}
+		return view{}, windows.Coord{}
 	}
 	defer func() { _ = windows.CloseHandle(out) }()
 
 	var info windows.ConsoleScreenBufferInfo
 	if err := windows.GetConsoleScreenBufferInfo(out, &info); err != nil || info.Size.X <= 0 {
-		return view{}
+		return view{}, windows.Coord{}
 	}
 	v := view{
 		cols:   info.Window.Right - info.Window.Left + 1,
@@ -440,14 +472,14 @@ func currentView(rows bool) view {
 		caretY: info.CursorPosition.Y - info.Window.Top,
 	}
 	if !rows {
-		return v
+		return v, info.CursorPosition
 	}
 	width := int(info.Size.X)
 	first := max(info.CursorPosition.Y-matchRowsAbove, 0)
 	for row := first; row <= info.CursorPosition.Y; row++ {
 		v.rows = append(v.rows, strings.TrimRight(readCells(out, int(row)*width, width, width), " "))
 	}
-	return v
+	return v, info.CursorPosition
 }
 
 func consoleTitle() string {

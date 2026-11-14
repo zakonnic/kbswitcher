@@ -52,13 +52,16 @@ clipboard:
    (`internal/platform/clip`);
 2. a random marker is put on the clipboard, so that a copy that does not happen
    cannot be mistaken for one that did;
-3. the selection is extended and copied with synthetic key presses — the same
-   shortcuts a user would press (`internal/platform/input`);
+3. for the last word, the line up to the caret is selected with one key press
+   and copied; the shortcuts are the ones a user would press
+   (`internal/platform/input`);
 4. the text is converted in memory (`internal/keymap`, no I/O at all);
-5. for the last word, the selection is narrowed down to the word and copied
-   again: nothing is pasted until the application shows exactly that word
-   selected;
-6. the result is pasted and the original clipboard content restored.
+5. the word, or the selection, is cut: what lands on the clipboard is what was
+   removed, and when that is not the text that was read it is pasted back and
+   nothing else is done;
+6. the result is pasted, and a quarter of a second after it was read off the
+   clipboard the original content is restored. That happens in the
+   background; a hotkey press that needs the clipboard waits for it.
 
 The whole sequence lives in `internal/switcher/switcher.go` and takes about
 100 ms. Text is never written to disk, never sent anywhere, and never logged:
@@ -70,8 +73,8 @@ converted text, the restored content) carries the formats
 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`
 and `CanUploadToCloudClipboard`, so clipboard history and cloud sync skip it
 (`internal/platform/clip/clip_windows.go`). The copies the application itself
-makes of the selected text (two for the last word: one to read it, one to
-check the narrowed selection) are the application's, and are not marked: with
+makes of the text (the line up to the caret when it is read, the word when it
+is cut) are the application's, and are not marked: with
 clipboard history on, they appear in it. A program that reads every clipboard
 change regardless, as a remote desktop client or WSLg does, still sees what
 passes through.
@@ -82,9 +85,11 @@ A terminal answers `Ctrl+C` by cancelling the line, not by copying, so on
 Windows the clipboard path cannot work there. Instead, **on a hotkey press
 only**, kbswitcher does this (`internal/platform/console`):
 
-1. it looks at the foreground window's class, and stops unless it is a console
-   window, Windows Terminal, or a Chromium window whose process runs a shell
-   (VS Code and other editors built on xterm.js);
+1. it looks at the foreground window's class: a console window, Windows
+   Terminal, a Chromium window (VS Code and other editors built on xterm.js),
+   or any other window. Every window but the first two takes the clipboard
+   path unless a shell runs under its process, which is what the next step
+   finds out;
 2. it walks that window's process tree and calls `AttachConsole` on each
    process to find the consoles behind the window, noting each one's size and
    caret position, and for Windows Terminal its caret row and the three rows
@@ -95,7 +100,11 @@ only**, kbswitcher does this (`internal/platform/console`):
    xterm.js terminal the position of its caret cell in its grid. Exactly one
    console must match, or nothing is touched; an editor whose focus is not on
    a terminal takes the clipboard path
-   (`internal/platform/console/uia_windows.go`);
+   (`internal/platform/console/uia_windows.go`). A window that offers no such
+   answer, a JetBrains IDE or a terminal with a renderer of its own, is sent a
+   Left key and then a Right key: the console whose caret moves has the focus,
+   and when none does the window takes the clipboard path
+   (`internal/platform/console/probe_windows.go`);
 4. it writes a Home key (and End, for a selection) into that console's input
    buffer with `WriteConsoleInputW` and reads the cells between the places the
    shell puts the caret with `ReadConsoleOutputCharacterW` — the input line the

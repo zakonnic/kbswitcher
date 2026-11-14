@@ -57,6 +57,9 @@ func (h *shellHost) clear() {
 }
 
 func (h *shellHost) close() {
+	if len(h.owned) == 0 {
+		h.clear() // a shell that is not the stand's own gets its line back empty
+	}
 	closeShells(h.owned)
 	if h.reaper != nil {
 		h.reaper()
@@ -305,9 +308,9 @@ const edgeExe = `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
 // window with a profile of its own. ProseMirror stands for the script-driven
 // editors (Claude, ChatGPT) whose selection lags the browser's; the page
 // mirrors the editor's text into the window title.
-func launchBrowser(profile string) *editorHost {
+func launchBrowser(profile string, load int) *editorHost {
 	_, self, _, _ := runtime.Caller(0)
-	page := "file:///" + filepath.ToSlash(filepath.Join(filepath.Dir(self), "prosemirror.html"))
+	page := fmt.Sprintf("file:///%s?load=%d", filepath.ToSlash(filepath.Join(filepath.Dir(self), "prosemirror.html")), load)
 	check(os.MkdirAll(profile, 0o700), "edge profile")
 	before := topLevel("Chrome_WidgetWin_1", 0)
 	createProcess(fmt.Sprintf(`"%s" --user-data-dir="%s" --no-first-run --no-default-browser-check --app=%s`, edgeExe, profile, page), 0)
@@ -369,5 +372,91 @@ func launchNotepad() *editorHost {
 			chord('A', vkControl)
 			chord(vkDelete)
 			chord('W', vkControl) // an empty tab closes without asking
+		}}
+}
+
+// attachShell works in a terminal that is already open, such as the one of a
+// JetBrains IDE: the window is the first one up the shell's process tree. A
+// click puts the focus in the terminal; nothing is closed afterwards.
+func attachShell(pid uint32, shell, click string) *shellHost {
+	all := processes()
+	var hwnd uintptr
+	for at := all[pid].parent; at != 0 && hwnd == 0; at = all[at].parent {
+		for h := range topLevelOf(at) {
+			if windowText(h) != "" {
+				hwnd = h
+			}
+		}
+	}
+	if hwnd == 0 {
+		fatal("no window above process %d", pid)
+	}
+	if !forceForeground(hwnd) {
+		fatal("the window of process %d cannot be brought to the front", pid)
+	}
+	guard = hwnd
+	if click != "" {
+		var x, y int
+		if _, err := fmt.Sscanf(click, "%d,%d", &x, &y); err != nil {
+			fatal("-click wants x,y: %v", err)
+		}
+		clickAt(hwnd, x, y)
+		time.Sleep(300 * time.Millisecond)
+	}
+	return &shellHost{hwnd: hwnd, shell: pid, unixy: isUnixy(shell)}
+}
+
+// openInIDE opens a scratch file in a running JetBrains IDE through its own
+// launcher and reads the file back after asking the IDE to save it. shell is
+// a terminal of the same IDE that must stay as it is meanwhile.
+func openInIDE(launcher, file, click string) *editorHost {
+	// The file is never written from outside once the IDE has it open: a
+	// reload in the middle of typing moves the caret.
+	if launcher != "" { // without one, the file is expected to be open already
+		check(os.WriteFile(file, nil, 0o600), "scratch file")
+		createProcess(fmt.Sprintf(`"%s" "%s"`, launcher, file), 0)
+	}
+	var hwnd uintptr
+	deadline := time.Now().Add(20 * time.Second)
+	for hwnd == 0 && time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		for h := range topLevel("SunAwtFrame", 0) {
+			if strings.Contains(windowText(h), filepath.Base(file)) {
+				hwnd = h
+			}
+		}
+	}
+	if hwnd == 0 {
+		fatal("no IDE window shows %s", file)
+	}
+	if !forceForeground(hwnd) {
+		fatal("the IDE cannot be brought to the front")
+	}
+	guard = hwnd
+	if click != "" {
+		var x, y int
+		if _, err := fmt.Sscanf(click, "%d,%d", &x, &y); err != nil {
+			fatal("-click wants x,y: %v", err)
+		}
+		clickAt(hwnd, x, y)
+		time.Sleep(300 * time.Millisecond)
+	}
+	var saved time.Time
+	return &editorHost{hwnd: hwnd,
+		read: func() (string, error) {
+			if time.Since(saved) > 200*time.Millisecond {
+				chord('S', vkControl)
+				saved = time.Now()
+				time.Sleep(60 * time.Millisecond)
+			}
+			data, err := os.ReadFile(file)
+			return string(data), err
+		},
+		cleanup: func() {
+			chord('A', vkControl)
+			chord(vkDelete)
+			chord('S', vkControl)
+			chord(0x73, vkControl) // Ctrl+F4 closes the tab
+			_ = os.Remove(file)
 		}}
 }

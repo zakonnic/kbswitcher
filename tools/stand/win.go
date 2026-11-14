@@ -34,6 +34,10 @@ var (
 	procSendMessageTimeoutW      = user32.NewProc("SendMessageTimeoutW")
 	procSendInput                = user32.NewProc("SendInput")
 	procPostMessage              = user32.NewProc("PostMessageW")
+	procGetWindowRect            = user32.NewProc("GetWindowRect")
+	procSetCursorPos             = user32.NewProc("SetCursorPos")
+	procMouseEvent               = user32.NewProc("mouse_event")
+	procSetProcessDPIAware       = user32.NewProc("SetProcessDPIAware")
 )
 
 type keyboardInput struct {
@@ -243,6 +247,9 @@ var shifted = map[rune]rune{
 	'"': '\'', ':': ';', '<': ',', '>': '.', '?': '/', '_': '-', '+': '=', '{': '[', '}': ']', '|': '\\', '~': '`',
 }
 
+// caretMark stands where the caret is when text follows it.
+const caretMark = "‸"
+
 // guard is the window every synthetic key press must go to; the stand stops
 // rather than type into anything else.
 var guard uintptr
@@ -312,6 +319,7 @@ const (
 	vkControl = 0x11
 	vkEscape  = 0x1B
 	vkEnd     = 0x23
+	vkLeft    = 0x25
 	vkDelete  = 0x2E
 	vkPause   = 0x13
 )
@@ -374,7 +382,7 @@ func consoleLine(pid uint32) (string, error) {
 	// merely moved never passes for an edit.
 	row := []rune(read(y, info.Size.X))
 	if rest := strings.TrimRight(string(row[min(int(info.CursorPosition.X), len(row)):]), " "); rest != "" {
-		b.WriteString("‸" + rest)
+		b.WriteString(caretMark + rest)
 	}
 	return b.String(), nil
 }
@@ -430,4 +438,27 @@ func closeShells(pids []uint32) {
 		}
 		windows.CloseHandle(h)
 	}
+}
+
+// topLevelOf returns the visible top-level windows of a process.
+func topLevelOf(pid uint32) map[uintptr]bool {
+	found := make(map[uintptr]bool)
+	cb := windows.NewCallback(func(hwnd, _ uintptr) uintptr {
+		if visible, _, _ := procIsWindowVisible.Call(hwnd); visible != 0 && windowPID(hwnd) == pid {
+			found[hwnd] = true
+		}
+		return 1
+	})
+	_, _, _ = procEnumWindows.Call(cb, 0)
+	return found
+}
+
+// clickAt clicks a point given in physical pixels from the window's corner.
+func clickAt(hwnd uintptr, x, y int) {
+	_, _, _ = procSetProcessDPIAware.Call()
+	var r struct{ left, top, right, bottom int32 }
+	_, _, _ = procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	_, _, _ = procSetCursorPos.Call(uintptr(int(r.left)+x), uintptr(int(r.top)+y))
+	_, _, _ = procMouseEvent.Call(0x2, 0, 0, 0, 0)
+	_, _, _ = procMouseEvent.Call(0x4, 0, 0, 0, 0)
 }

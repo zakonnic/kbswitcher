@@ -21,11 +21,12 @@ type Kind int
 // The window classes worth telling apart; everything else is an ordinary
 // application.
 const (
-	NotTerminal Kind = iota
-	Conhost          // the classic console window
-	Cascadia         // Windows Terminal
-	Mintty           // Git Bash, which has no Windows console at all
-	Chromium         // an Electron or Chromium window, which may host an xterm.js terminal
+	Other     Kind = iota // any other window; it may still run shells of its own
+	Conhost               // the classic console window
+	Cascadia              // Windows Terminal
+	Mintty                // Git Bash, which has no Windows console at all
+	JetBrains             // an IDE whose window is an editor first and a terminal second
+	Chromium              // an Electron or Chromium window, which may host an xterm.js terminal
 )
 
 // window is the foreground window and what could be learned about it cheaply.
@@ -64,10 +65,12 @@ func classify(class string) Kind {
 	// is told apart by owning no console.
 	case "Chrome_WidgetWin_1":
 		return Chromium
+	case "SunAwtFrame":
+		return JetBrains
 	default:
-		// The JetBrains IDEs (SunAwtFrame) included: they expose nothing that
-		// tells their terminal pane from their editor.
-		return NotTerminal
+		// A terminal with a renderer of its own, when it runs shells; an
+		// ordinary application when it runs none.
+		return Other
 	}
 }
 

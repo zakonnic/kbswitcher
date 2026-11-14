@@ -98,6 +98,9 @@ func (a *App) Close() error {
 	if a.hotkeys != nil {
 		errs = append(errs, a.hotkeys.Close())
 	}
+	if a.switcher != nil {
+		a.switcher.Idle() // the last conversion ends, and the clipboard goes back to the user
+	}
 	if a.keyboard != nil {
 		errs = append(errs, a.keyboard.Close())
 	}
@@ -217,7 +220,7 @@ func (a *App) buildSwitcher() error {
 		Layouts:   a.layouts,
 		Keyboard:  a.keyboard,
 		Clipboard: a.clipboard,
-		Terminal:  terminal{},
+		Terminal:  terminal{a.keyboard},
 	}
 	a.switcher, err = switcher.New(installed, deps, switcher.DefaultOptions(), a.log)
 	if err != nil {
@@ -229,14 +232,16 @@ func (a *App) buildSwitcher() error {
 
 // terminal hands the switcher the console behind the focused window. It is a
 // separate type only so that the switcher stays free of platform code.
-type terminal struct{}
+type terminal struct{ keyboard *input.Keyboard }
 
-func (terminal) Open() (switcher.Console, error) {
-	session, err := console.Open()
-	if errors.Is(err, console.ErrNotConsole) {
+func (t terminal) Open(selection bool) (switcher.Console, error) {
+	session, err := console.Open(t.keyboard.Nudge, selection)
+	switch {
+	case errors.Is(err, console.ErrShells):
+		return nil, fmt.Errorf("%w: %w: %w", switcher.ErrNoConsole, switcher.ErrShellsNearby, err)
+	case errors.Is(err, console.ErrNotConsole):
 		return nil, fmt.Errorf("%w: %w", switcher.ErrNoConsole, err)
-	}
-	if err != nil {
+	case err != nil:
 		return nil, err
 	}
 	return session, nil

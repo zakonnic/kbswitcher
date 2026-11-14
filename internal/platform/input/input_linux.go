@@ -16,9 +16,11 @@ const (
 	keysymControl = 0xFFE3
 	keysymAlt     = 0xFFE9
 	keysymSuper   = 0xFFEB
+	keysymHome    = 0xFF50
 	keysymLeft    = 0xFF51
 	keysymRight   = 0xFF53
 	keysymC       = 0x0063
+	keysymX       = 0x0078
 	keysymV       = 0x0076
 )
 
@@ -29,9 +31,11 @@ const (
 	fallbackControl = 37
 	fallbackAlt     = 64
 	fallbackSuper   = 133
+	fallbackHome    = 110
 	fallbackLeft    = 113
 	fallbackRight   = 114
 	fallbackC       = 54
+	fallbackX       = 53
 	fallbackV       = 55
 )
 
@@ -50,7 +54,7 @@ type Keyboard struct {
 	display *C.Display
 
 	shift, control, alt, super C.KeyCode
-	left, right, c, v          C.KeyCode
+	home, left, right, c, v, x C.KeyCode
 }
 
 // Open connects to the X server and checks that it can fake key presses.
@@ -73,10 +77,12 @@ func Open() (*Keyboard, error) {
 	k.control = k.keycode(keysymControl, fallbackControl)
 	k.alt = k.keycode(keysymAlt, fallbackAlt)
 	k.super = k.keycode(keysymSuper, fallbackSuper)
+	k.home = k.keycode(keysymHome, fallbackHome)
 	k.left = k.keycode(keysymLeft, fallbackLeft)
 	k.right = k.keycode(keysymRight, fallbackRight)
 	k.c = k.keycode(keysymC, fallbackC)
 	k.v = k.keycode(keysymV, fallbackV)
+	k.x = k.keycode(keysymX, fallbackX)
 	return k, nil
 }
 
@@ -119,9 +125,9 @@ func (k *Keyboard) ReleaseModifiers() error {
 	return k.flush()
 }
 
-// SelectWordLeft presses Ctrl+Shift+Left the given number of times.
-func (k *Keyboard) SelectWordLeft(times int) error {
-	return k.send([]C.KeyCode{k.control, k.shift}, k.left, times)
+// SelectToLineStart presses Shift+Home.
+func (k *Keyboard) SelectToLineStart() error {
+	return k.send([]C.KeyCode{k.shift}, k.home, 1)
 }
 
 // SelectCharsLeft presses Shift+Left n times.
@@ -134,11 +140,23 @@ func (k *Keyboard) CollapseSelectionRight() error {
 	return k.send(nil, k.right, 1)
 }
 
-// Copy presses Ctrl+C.
-func (k *Keyboard) Copy() error { return k.send([]C.KeyCode{k.control}, k.c, 1) }
+// Nudge presses Left, or Right with back set.
+func (k *Keyboard) Nudge(back bool) error {
+	if back {
+		return k.send(nil, k.right, 1)
+	}
+	return k.send(nil, k.left, 1)
+}
+
+// Copy presses Ctrl+C. Nothing here tells a terminal from an editor, so there
+// is no window to be gentle with.
+func (k *Keyboard) Copy(bool) error { return k.send([]C.KeyCode{k.control}, k.c, 1) }
 
 // Paste presses Ctrl+V.
 func (k *Keyboard) Paste() error { return k.send([]C.KeyCode{k.control}, k.v, 1) }
+
+// Cut presses Ctrl+X.
+func (k *Keyboard) Cut() error { return k.send([]C.KeyCode{k.control}, k.x, 1) }
 
 // send holds the modifiers down, presses a key a number of times, and lets the
 // modifiers go.

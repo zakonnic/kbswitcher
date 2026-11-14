@@ -37,9 +37,6 @@ var (
 	procDispatchMessageW           = user32.NewProc("DispatchMessageW")
 	procPostMessageW               = user32.NewProc("PostMessageW")
 	procPostQuitMessage            = user32.NewProc("PostQuitMessage")
-	procGetOpenClipboardWindow     = user32.NewProc("GetOpenClipboardWindow")
-	procGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
-	procGetWindowThreadProcessID   = user32.NewProc("GetWindowThreadProcessId")
 	procGlobalAlloc                = kernel32.NewProc("GlobalAlloc")
 	procGlobalFree                 = kernel32.NewProc("GlobalFree")
 	procGlobalLock                 = kernel32.NewProc("GlobalLock")
@@ -67,10 +64,6 @@ const (
 	// the clipboard open.
 	openAttempts = 100
 	openRetry    = 2 * time.Millisecond
-	// settle is how long an offered text stays once a bystander (a clipboard
-	// synchronizer such as WSLg's) has read it first, which leaves no way to
-	// see the paste itself.
-	settle = 250 * time.Millisecond
 )
 
 var (
@@ -125,13 +118,8 @@ type Clipboard struct {
 
 type offer struct {
 	text []byte
-	// target is the process expected to paste: the focused window's.
-	target uint32
-	read   chan struct{}
-	once   sync.Once
+	read chan struct{}
 }
-
-func (o *offer) taken() { o.once.Do(func() { close(o.read) }) }
 
 var (
 	// clipboards maps a window to its Clipboard for the window procedure.
@@ -220,14 +208,14 @@ func (c *Clipboard) WriteText(_ context.Context, text string) error {
 }
 
 // Offer puts text on the clipboard for a paste. The channel is closed when
-// the focused application reads it.
+// something reads it: the application pasting, or a clipboard monitor ahead
+// of it.
 func (c *Clipboard) Offer(_ context.Context, text string) (<-chan struct{}, error) {
 	read := make(chan struct{})
 	var err error
 	c.do(func() {
 		if err = c.put(nil, true); err == nil {
-			foreground, _, _ := procGetForegroundWindow.Call()
-			c.offer = &offer{text: utf16Bytes(text), target: processOf(foreground), read: read}
+			c.offer = &offer{text: utf16Bytes(text), read: read}
 		}
 	})
 	if err != nil {
@@ -295,21 +283,10 @@ func (c *Clipboard) render() {
 	if c.offer == nil {
 		return
 	}
-	o := c.offer
+	setData(cfUnicodeText, c.offer.text)
+	close(c.offer.read)
 	c.offer = nil
-	setData(cfUnicodeText, o.text)
 	c.seq = sequence()
-	if reader, _, _ := procGetOpenClipboardWindow.Call(); reader != 0 && processOf(reader) == o.target {
-		o.taken()
-		return
-	}
-	time.AfterFunc(settle, o.taken)
-}
-
-func processOf(hwnd uintptr) uint32 {
-	var pid uint32
-	_, _, _ = procGetWindowThreadProcessID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	return pid
 }
 
 func (c *Clipboard) readText() (string, error) {

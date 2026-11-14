@@ -15,9 +15,6 @@ import (
 const (
 	// poll is how often the clipboard is inspected while waiting.
 	poll = 15 * time.Millisecond
-	// settle is how long a pasted text is left on the clipboard: there is no
-	// telling when the application has read it.
-	settle = 150 * time.Millisecond
 )
 
 // preservedFormats are the formats worth putting back, in the order they are
@@ -88,14 +85,14 @@ func (c *Clipboard) WriteText(ctx context.Context, text string) error {
 	return nil
 }
 
-// Offer puts text on the clipboard for a paste. The channel is closed once
-// the text has had time to be read.
+// Offer puts text on the clipboard for a paste. There is no telling when it
+// is read here, so the channel is closed at once.
 func (c *Clipboard) Offer(ctx context.Context, text string) (<-chan struct{}, error) {
 	if err := c.WriteText(ctx, text); err != nil {
 		return nil, err
 	}
 	read := make(chan struct{})
-	time.AfterFunc(settle, func() { close(read) })
+	close(read)
 	return read, nil
 }
 

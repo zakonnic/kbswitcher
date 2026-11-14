@@ -86,11 +86,9 @@ func TestOfferAndRestore(t *testing.T) {
 	if got := readElsewhere(t); got != "привет" {
 		t.Errorf("another application reads %q, want %q", got, "привет")
 	}
-	// The reader is not the focused application, so the read is reported
-	// only after the settle time.
 	select {
 	case <-read:
-	case <-time.After(settle + time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("the read was not reported")
 	}
 

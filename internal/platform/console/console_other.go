@@ -11,8 +11,14 @@ var ErrNotConsole = errors.New("reading a console is only possible on Windows")
 // Session is never created on this platform.
 type Session struct{}
 
+// ErrShells is never reported on this platform.
+var ErrShells = errors.New("shells run under the window")
+
+// Probe presses a caret key in the focused window.
+type Probe func(back bool) error
+
 // Open always fails away from Windows.
-func Open() (*Session, error) { return nil, ErrNotConsole }
+func Open(Probe, bool) (*Session, error) { return nil, ErrNotConsole }
 
 // Edit is never reached on this platform.
 func (s *Session) Edit(bool, func(Line) (int, int, string)) error { return ErrNotConsole }

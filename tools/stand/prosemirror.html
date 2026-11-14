@@ -32,6 +32,16 @@ const view = new EditorView(document.querySelector("#editor"), {
 });
 view.focus();
 document.title = "stand:";
+
+// ?load=N keeps the main thread busy in bursts of about N ms, as a heavy
+// application does: the editor then learns of a new selection late.
+const load = Number(new URLSearchParams(location.search).get("load")) || 0;
+if (load) {
+  setInterval(() => {
+    const end = performance.now() + load * (0.5 + Math.random());
+    while (performance.now() < end);
+  }, load);
+}
 </script>
 </body>
 </html>
