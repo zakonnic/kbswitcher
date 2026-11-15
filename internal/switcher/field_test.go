@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +30,16 @@ type fakeField struct {
 	frozen, stale bool
 	// clusters makes Shift+Left take a letter with the marks after it.
 	clusters bool
-	err      error
-	reads    int
+	// direct makes it a system edit control, changed by Replace; typed
+	// counts the characters it was sent as keys.
+	direct bool
+	typed  int
+	err    error
+	reads  int
+	// failAfter makes every read after that many fail.
+	failAfter int
+	// replaceErr makes Replace fail, changing nothing.
+	replaceErr error
 }
 
 func newField(text string) *fakeField {
@@ -45,6 +54,9 @@ func (f *fakeField) sel() (int, int) { return min(f.caret, f.anchor), max(f.care
 
 func (f *fakeField) Read(around int) (field.Around, error) {
 	f.reads++
+	if f.failAfter > 0 && f.reads > f.failAfter {
+		return field.Around{}, field.ErrNoText
+	}
 	if f.err != nil {
 		return field.Around{}, f.err
 	}
@@ -63,7 +75,32 @@ func (f *fakeField) Read(around int) (field.Around, error) {
 		Before:   string(f.text[max(lo-around, 0):lo]),
 		Selected: string(f.text[lo:hi]),
 		After:    string(f.text[hi:min(hi+around, len(f.text))]),
+		Direct:   f.direct,
 	}, nil
+}
+
+// Replace changes the text at once, as a system edit control's messages do;
+// they would overtake the keys still queued, so none may be.
+func (f *fakeField) Replace(right bool, erased, text string) error {
+	if !f.direct || len(f.queue) > 0 {
+		return fmt.Errorf("Replace with direct=%v and %d keys queued", f.direct, len(f.queue))
+	}
+	if f.replaceErr != nil {
+		return f.replaceErr
+	}
+	if right {
+		_, f.caret = f.sel()
+		f.anchor = f.caret
+	}
+	before := string(f.text[:f.caret])
+	if f.caret != f.anchor || !strings.HasSuffix(before, erased) {
+		return field.ErrChanged
+	}
+	from := f.caret - len([]rune(erased))
+	f.text = slices.Concat(f.text[:from:from], []rune(text), f.text[f.caret:])
+	f.caret = from + len([]rune(text))
+	f.anchor = f.caret
+	return nil
 }
 
 // settle lets the field take in every key still queued.
@@ -84,7 +121,7 @@ func (f *fakeField) Retype(right bool, erase int, text string) error {
 	for range erase {
 		f.queue = append(f.queue, f.backspace)
 	}
-	f.typeLater(text)
+	f.typeKeys(text)
 	return nil
 }
 
@@ -93,6 +130,11 @@ func (f *fakeField) typeLater(text string) {
 	for _, r := range text {
 		f.queue = append(f.queue, func() { f.put(r) })
 	}
+}
+
+func (f *fakeField) typeKeys(text string) {
+	f.typed += len([]rune(text))
+	f.typeLater(text)
 }
 
 // leftLater queues a Left the field has not taken in.
@@ -549,6 +591,165 @@ func TestAPasswordFieldIsLeftAlone(t *testing.T) {
 	}
 	if editor.copies != 0 || editor.String() != "ckjdj" {
 		t.Errorf("the clipboard path ran: %d copies, text %q", editor.copies, editor.String())
+	}
+}
+
+func TestASystemEditControlIsChangedWithoutTyping(t *testing.T) {
+	tests := []struct {
+		name, text, tail, late, want string
+		selectFrom                   int // -1: nothing selected
+	}{
+		{"the last word", "hello ckjdj", "", "", "hello слово", -1},
+		{"spaces after the word", "hello ckjdj  ", "", "", "hello слово  ", -1},
+		{"text after the caret", "hello ckjdj", " world", "", "hello слово world", -1},
+		{"keys the field shows late", "hello ckj", "", "dj", "hello слово", -1},
+		{"a combining mark", "hello ckjdj\u0301", "", "", "hello слово\u0301", -1},
+		{"a selection", "hello ckjdj ckjdj", "!", "", "hello слово слово!", len("hello ")},
+		{"an emoji in the selection", "\U0001F44D ckjdj", "", "", "\U0001F44D слово", 0},
+		{"a tab in the selection", "ckjdj\tckjdj", "", "", "слово\tслово", 0},
+		{"a selection too long to type", strings.Repeat("ckjdj ", maxRetyped), "", "", strings.Repeat("слово ", maxRetyped), 0},
+	}
+	for _, tt := range tests {
+		for _, pace := range []int{0, 1} {
+			t.Run(fmt.Sprintf("%s/pace %d", tt.name, pace), func(t *testing.T) {
+				f := newField(tt.text + tt.tail)
+				f.direct, f.clusters, f.pace = true, true, pace
+				f.caret = len([]rune(tt.text))
+				f.anchor = f.caret
+				if tt.selectFrom >= 0 {
+					f.anchor = len([]rune(tt.text[:tt.selectFrom]))
+				}
+				f.typeLater(tt.late)
+				s, editor := fieldSwitcher(t, f, "")
+				convert := s.ConvertLastWord
+				if tt.selectFrom >= 0 {
+					convert = s.ConvertSelection
+				}
+				if err := convert(t.Context()); err != nil {
+					t.Fatalf("convert: %v", err)
+				}
+				f.settle()
+				if got := f.String(); got != tt.want {
+					t.Errorf("text is %q, want %q", got, tt.want)
+				}
+				if f.typed != 0 || editor.copies != 0 {
+					t.Errorf("%d characters were typed and %d copies made", f.typed, editor.copies)
+				}
+			})
+		}
+	}
+}
+
+func TestPressingAgainInASystemEditControlCycles(t *testing.T) {
+	f := newField("  asdads kkkkkkhhssdjk osd  ios do  sdosudushdhiu ")
+	f.direct = true
+	s, _ := fieldSwitcher(t, f, "")
+	for press := range 3 {
+		if err := s.ConvertLastWord(t.Context()); err != nil {
+			t.Fatalf("press %d: %v", press+1, err)
+		}
+	}
+	if got, want := f.String(), "  asdads kkkkkkhhssdjk osd  ios do  ывщыгвгырвршг "; got != want {
+		t.Errorf("text is %q, want %q", got, want)
+	}
+}
+
+func TestASystemEditControlThatHangsGetsNoKeys(t *testing.T) {
+	f := newField("hello ckjdj")
+	f.direct, f.anchor = true, len("hello ")
+	s, _ := fieldSwitcher(t, f, "")
+	f.frozen = true
+	if err := s.ConvertSelection(t.Context()); !errors.Is(err, errFieldLate) {
+		t.Fatalf("ConvertSelection = %v, want errFieldLate", err)
+	}
+	if f.typed != 0 {
+		t.Errorf("%d characters were typed behind the Backspace", f.typed)
+	}
+}
+
+func TestAFieldThatStopsTellingItsTextIsNotHandedToTheClipboard(t *testing.T) {
+	// The keys already sent changed the field; the clipboard path would
+	// start from what they left.
+	for _, direct := range []bool{false, true} {
+		for _, selection := range []bool{false, true} {
+			t.Run(fmt.Sprintf("direct %v, selection %v", direct, selection), func(t *testing.T) {
+				f := newField("hello ckjdj")
+				f.direct, f.failAfter = direct, 1
+				convert := func(s *Switcher) error { return s.ConvertLastWord(t.Context()) }
+				if selection {
+					f.anchor = len("hello ")
+					convert = func(s *Switcher) error { return s.ConvertSelection(t.Context()) }
+				}
+				s, editor := fieldSwitcher(t, f, "ckjdj")
+				editor.selectFrom(0)
+				if err := convert(s); err == nil || errors.Is(err, ErrNoField) {
+					t.Errorf("convert = %v, want an error that is not ErrNoField", err)
+				}
+				if editor.copies != 0 || f.typed != 0 {
+					t.Errorf("%d copies made and %d characters typed after the field stopped answering", editor.copies, f.typed)
+				}
+			})
+		}
+	}
+}
+
+func TestASelectionTheUserMadeIsNotTakenForTheMark(t *testing.T) {
+	// The user selected the line with Shift+Home and pressed the hotkey; the
+	// field shows that selection before the Shift+Left behind it.
+	f := newField("hello ckjdj")
+	f.direct = true
+	// The first read takes in only a key before the Shift+Home.
+	f.queue = append(f.queue, func() {}, func() { f.caret = 0 })
+	f.pace = 1
+	s, editor := fieldSwitcher(t, f, "ckjdj")
+	editor.selectFrom(0)
+	if err := s.ConvertLastWord(t.Context()); err != nil {
+		t.Fatalf("ConvertLastWord: %v", err)
+	}
+	f.settle()
+	if got := f.String(); got != "hello ckjdj" || f.typed != 0 {
+		t.Errorf("text is %q after %d characters typed, want it untouched", got, f.typed)
+	}
+	if editor.String() != "слово" {
+		t.Errorf("the clipboard path left %q", editor.String())
+	}
+}
+
+func TestAFailedReplacementDropsTheMark(t *testing.T) {
+	f := newField("hello ckjdj")
+	f.direct, f.replaceErr = true, field.ErrChanged
+	s, _ := fieldSwitcher(t, f, "")
+	if err := s.ConvertLastWord(t.Context()); !errors.Is(err, field.ErrChanged) {
+		t.Fatalf("ConvertLastWord = %v, want field.ErrChanged", err)
+	}
+	f.settle()
+	if f.caret != len(f.text) || f.anchor != f.caret {
+		t.Errorf("the selection is %d..%d; want the caret at the end", f.anchor, f.caret)
+	}
+}
+
+func TestOneCharacter(t *testing.T) {
+	for text, want := range map[string]bool{
+		"a": true, "e\u0301": true, "\U0001F44D\U0001F3FB": true, "\U0001F468\u200d\U0001F469": true,
+		"\U0001F1FA\U0001F1E6": true, "\u0915\u093e": true, "ab": false, " a": false, "": false, "\U0001F1FA\U0001F1E6\U0001F1FA\U0001F1E6": false,
+	} {
+		if got := oneCharacter(text); got != want {
+			t.Errorf("oneCharacter(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
+func TestASystemEditControlKeepsMultiLineSelectionsForTheClipboard(t *testing.T) {
+	f := newField("ckjdj\nckjdj")
+	f.direct, f.anchor = true, 0
+	s, editor := fieldSwitcher(t, f, "ckjdj")
+	editor.selectFrom(0)
+	if err := s.ConvertSelection(t.Context()); err != nil {
+		t.Fatalf("ConvertSelection: %v", err)
+	}
+	f.settle()
+	if f.String() != "ckjdj\nckjdj" || editor.String() != "слово" {
+		t.Errorf("field %q, clipboard path %q", f.String(), editor.String())
 	}
 }
 

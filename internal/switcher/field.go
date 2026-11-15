@@ -14,7 +14,19 @@ import (
 
 // Field is the text field that has the keyboard focus, where the platform
 // can read its text without a key press (on Windows, UI Automation or a
-// classic edit control's own messages).
+// system edit control's own messages).
+//
+// A field is written to in one of two ways, chosen by what it is:
+//
+//   - A system edit control (field.Around.Direct) is changed through its own
+//     messages, which the operating system offers for exactly that. No key
+//     press goes through the application's input handling, which can alter
+//     typed characters.
+//   - Any other field gets keys: Backspace, then the characters as Unicode.
+//
+// Either way a key press comes first, because only a key queues behind the
+// keys the user typed: a field shows everything before it once it shows
+// that key's effect.
 type Field interface {
 	// Read returns the selection and up to around characters on either side
 	// of it. It fails with ErrNoField (field.ErrNoText) when the focus is not
@@ -26,6 +38,12 @@ type Field interface {
 	// Retype presses Right when right is set, then Backspace erase times,
 	// and types text, all in one burst.
 	Retype(right bool, erase int, text string) error
+	// Replace replaces erased, the text that ends at the caret, with text,
+	// in a Direct field, without keys; with right set the selection is
+	// dropped at its end first. It is called only once the field shows every
+	// key sent to it, and fails with field.ErrChanged, replacing nothing,
+	// when the field does not hold erased there.
+	Replace(right bool, erased, text string) error
 }
 
 var (
@@ -106,30 +124,53 @@ func (s *Switcher) retypeLastWord(seen field.Around) (*keymap.Layout, error) {
 	switch {
 	case word == "" || strings.ContainsFunc(now.Selected, lineBreak):
 		return nil, errors.Join(ErrNothingToConvert, f.Retype(true, 0, ""))
-	case utf8.RuneCountInString(now.Selected) != 1 || !oneKeyEach(typed):
-		// Shift+Left took more than one character, or Backspace would: a
-		// combining mark, an emoji. The clipboard path cuts what it replaces.
+	case now.Direct && !oneCharacter(now.Selected),
+		!now.Direct && (utf8.RuneCountInString(now.Selected) != 1 || !oneKeyEach(typed)):
+		// More is selected than Shift+Left selects: the user's own keys made
+		// the selection, and Shift+Left is still on its way. Or Backspace
+		// would not take the word one character at a time: a combining mark,
+		// an emoji. The Right that follows Shift+Left through the queue puts
+		// the caret back, and the clipboard path cuts what it replaces.
 		return nil, errors.Join(ErrNoField, f.Retype(true, 0, ""))
 	}
 	target, converted := s.converted(typed)
-	s.log.Debug("retyping in a text field", "kept", utf8.RuneCountInString(head), "characters", utf8.RuneCountInString(typed))
-	if err := f.Retype(true, utf8.RuneCountInString(typed), converted); err != nil {
+	s.log.Debug("rewriting a word in a text field", "direct", now.Direct,
+		"kept", utf8.RuneCountInString(head), "characters", utf8.RuneCountInString(typed))
+	if err := s.replace(now.Direct, true, typed, converted); err != nil {
+		if !now.Direct {
+			return nil, err
+		}
+		if a, readErr := f.Read(0); readErr != nil || a.Selected != "" {
+			// The character Shift+Left selected may still be: the next key
+			// typed would replace it.
+			err = errors.Join(err, f.Retype(true, 0, ""))
+		}
 		return nil, err
 	}
 	return target, nil
 }
 
+// replace replaces erased, which ends at the caret, with text: through the
+// field's own messages when it is direct, else with keys. The field shows
+// every key sent so far.
+func (s *Switcher) replace(direct, right bool, erased, text string) error {
+	if direct {
+		return s.deps.Field.Replace(right, erased, text)
+	}
+	return s.deps.Field.Retype(right, utf8.RuneCountInString(erased), text)
+}
+
 // retypeSelection replaces a selection that lies on one line. It is erased
 // with Backspace first, and what the field shows gone decides the rest. The
-// selection, or more if it grew after it was read, is typed back converted.
+// selection, or more if it grew after it was read, is put back converted.
 // Only its end goes when an editor has not taken the selection in yet and
 // erases one character as if there were none; the rest of it is erased
 // after. Characters before it go when such an editor's caret is at the
 // selection's start; they are put back. Anything else is reported, and
 // nothing is typed.
 func (s *Switcher) retypeSelection(seen field.Around) (*keymap.Layout, error) {
-	if !oneKeyEach(seen.Selected) || strings.ContainsFunc(seen.Selected, lineBreak) ||
-		utf8.RuneCountInString(seen.Selected) > maxRetyped {
+	if strings.ContainsFunc(seen.Selected, lineBreak) || !seen.Direct &&
+		(!oneKeyEach(seen.Selected) || utf8.RuneCountInString(seen.Selected) > maxRetyped) {
 		// Line breaks, tabs, embedded objects and characters Backspace does
 		// not take one at a time cannot be retyped safely. The clipboard path
 		// pastes them.
@@ -139,31 +180,41 @@ func (s *Switcher) retypeSelection(seen field.Around) (*keymap.Layout, error) {
 	if err := f.Retype(false, 1, ""); err != nil { // Backspace
 		return nil, err
 	}
-	typed, erase := seen.Selected, 0
-	// A field that does not show the Backspace in time takes the characters
-	// after it all the same.
-	if now, err := s.awaitField(func(a field.Around) bool { return a.Selected == "" }); err == nil {
+	direct := seen.Direct
+	typed, rest := seen.Selected, "" // rest: the start of the selection a late editor left
+	now, err := s.awaitField(func(a field.Around) bool { return a.Selected == "" })
+	switch {
+	case err == nil:
 		went, ok := erasure(seen, now)
-		selected := utf8.RuneCountInString(seen.Selected)
+		selected := []rune(seen.Selected)
 		switch {
 		case !ok:
 			return nil, fmt.Errorf("%w: the field changed in a way that cannot be told", ErrNotSelected)
 		case went.before:
-			return nil, errors.Join(ErrNotSelected, f.Retype(false, 0, went.text))
-		case went.n < selected:
-			erase = selected - went.n
-		case !typable(went.text):
+			return nil, errors.Join(ErrNotSelected, s.replace(direct, false, "", went.text))
+		case went.n < len(selected):
+			rest = string(selected[:len(selected)-went.n])
+		case !direct && !typable(went.text):
 			return nil, fmt.Errorf("%w: the selection grew over a tab", ErrNotSelected)
 		default:
 			typed = went.text
 		}
+	case direct || !errors.Is(err, errFieldLate):
+		// A system edit control that has not taken a Backspace in for a
+		// second hangs; keys typed behind it could be altered. One Ctrl+Z
+		// gives the selection back once it has. A field that no longer tells
+		// its text may no longer have the focus.
+		return nil, err
 	}
+	// A field that does not show the Backspace in time takes the characters
+	// after it all the same.
 	if strings.TrimSpace(typed) == "" {
-		return nil, errors.Join(ErrNothingToConvert, f.Retype(false, erase, typed))
+		return nil, errors.Join(ErrNothingToConvert, s.replace(direct, false, rest, typed))
 	}
 	target, converted := s.converted(typed)
-	s.log.Debug("retyping a selection", "characters", utf8.RuneCountInString(typed), "late", erase)
-	if err := f.Retype(false, erase, converted); err != nil {
+	s.log.Debug("rewriting a selection", "direct", direct,
+		"characters", utf8.RuneCountInString(typed), "late", utf8.RuneCountInString(rest))
+	if err := s.replace(direct, false, rest, converted); err != nil {
 		return nil, err
 	}
 	return target, nil
@@ -244,22 +295,50 @@ func (s *Switcher) converted(typed string) (*keymap.Layout, string) {
 	return s.layouts[target], keymap.Convert(typed, s.layouts[source], s.layouts[target])
 }
 
-// awaitField reads the field until done holds.
+// awaitField reads the field until done holds; a read that fails is tried
+// again. It is called once keys have been sent to the field, so no error it
+// returns sends the conversion down the clipboard path, which would start
+// from whatever those keys did.
 func (s *Switcher) awaitField(done func(field.Around) bool) (field.Around, error) {
 	deadline := time.Now().Add(s.options.FieldTimeout)
 	for {
 		a, err := s.deps.Field.Read(fieldAround)
-		if err != nil {
-			return field.Around{}, err
-		}
-		if done(a) {
+		if err == nil && done(a) {
 			return a, nil
 		}
 		if !time.Now().Before(deadline) {
+			if err != nil {
+				return field.Around{}, fmt.Errorf("the text field stopped telling its text: %v", err) //nolint:errorlint // ErrNoField would send the conversion down the clipboard path
+			}
 			return field.Around{}, errFieldLate
 		}
 		time.Sleep(fieldPoll)
 	}
+}
+
+// oneCharacter reports text that a reader sees as one character: a letter
+// with the marks after it, an emoji with its modifiers and joined parts, a
+// flag. A cluster it does not know of costs only the clipboard path.
+func oneCharacter(text string) bool {
+	bases, flags, joined := 0, 0, false
+	for _, r := range text {
+		switch {
+		case r == '\u200d':
+			joined = true
+			continue
+		case unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me, unicode.Variation_Selector), r >= 0x1F3FB && r <= 0x1F3FF:
+			// a mark, a selector or a skin tone goes with what is before it
+		case unicode.Is(unicode.Regional_Indicator, r):
+			if flags%2 == 0 && !joined {
+				bases++
+			}
+			flags++
+		case !joined:
+			bases++
+		}
+		joined = false
+	}
+	return bases == 1
 }
 
 // lineEnd is the part of text after its last line break; lineStart, the part

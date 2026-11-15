@@ -46,30 +46,41 @@ that the current ones reach it.
 ## What it reads, and when
 
 Only on a hotkey press, and only from the focused window. Where the focused
-text field tells its text, kbswitcher reads that text and types the fix; in a
-terminal it goes through the console API (next section); anywhere else it goes
-through the clipboard.
+text field tells its text, kbswitcher reads that text and writes the fix into
+it; in a terminal it goes through the console API (next section); anywhere
+else it goes through the clipboard.
 
 ### A text field that tells its text (Windows)
 
 `internal/platform/field` asks for the field that has the keyboard focus:
 
-1. through UI Automation: the focused element, whether it is a password field
-   (then nothing is done at all), whether it is editable, whether it is large
-   enough to show its own text (an editor that draws its text elsewhere keeps
-   a tiny stand-in element whose text is not what you see, and is left to the
-   clipboard path), and the selection with at most 300 characters on either
-   side of it (`internal/platform/uia`);
-2. for a classic edit control, which tells UI Automation nothing of its text:
-   the control's style (`ES_PASSWORD` stops everything, `ES_READONLY` leaves
-   the field alone), the selection (`EM_GETSEL`) and the one line it starts
-   on (`EM_GETLINE`), not the rest of the field.
+1. for a system edit control (the window class Windows reports for the focus
+   is `Edit`, or a RichEdit class: Notepad, dialogs, Windows Forms): the
+   control's style (`ES_PASSWORD` stops everything, `ES_READONLY` leaves the
+   field alone), the selection (`EM_GETSEL`) and whole screen rows of the
+   line it lies on (`EM_GETLINE`) until 300 characters on either side are
+   reached, at most 64 rows each way, not the rest of the field; what is kept
+   is 300 characters on either side. A RichEdit control's text is read
+   through UI Automation as below where it tells it;
+2. for any other field, through UI Automation: the focused element, whether
+   it is a password field (then nothing is done at all), whether it is
+   editable, whether it is large enough to show its own text (an editor that
+   draws its text elsewhere keeps a tiny stand-in element whose text is not
+   what you see, and is left to the clipboard path), and the selection with at
+   most 300 characters on either side of it (`internal/platform/uia`).
 
-The text read is converted in memory and dropped. The fix is typed with
-`SendInput`: `Shift`+`Left` and the `Right` that drops the one character it
-selects, so that the field has taken in everything typed before the hotkey
-(`internal/switcher/field.go`), then Backspace over the word and the converted
-characters as Unicode input.
+The text read is converted in memory and dropped. First `Shift`+`Left` is
+sent with `SendInput`: it queues behind everything typed before the hotkey, so
+once the field shows the one character it selects, the field has taken all of
+that in (`internal/switcher/field.go`). Then:
+
+- a system edit control gets the fix through its own messages: `EM_SETSEL`
+  over the word, checked to hold exactly the word first, and `EM_REPLACESEL`
+  with the converted text, which `Ctrl`+`Z` undoes. No character goes
+  through the keyboard;
+- any other field gets the `Right` that drops the selection, Backspace over
+  the word and the converted characters as Unicode input.
+
 The clipboard is not touched on this path. The characters typed are visible to
 any low-level keyboard hook on the machine, as every key you type is; a
 keylogger learns nothing it had not seen when the word was typed the first

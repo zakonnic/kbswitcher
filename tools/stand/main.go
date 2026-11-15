@@ -21,6 +21,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/zakonnic/kbswitcher/internal/keymap"
 	"github.com/zakonnic/kbswitcher/internal/platform/clip"
@@ -33,10 +34,10 @@ import (
 
 type options struct {
 	host, shell, word, layout, want, mode, kb, pre, vsdir, focus, editor, cmd string
-	tabs, n, left, presses, load, pid                                         int
-	click, ide, file, ctrl                                                    string
+	tabs, n, left, presses, load, pid, prefix, lines, sel                     int
+	click, ide, file, ctrl, move                                              string
 	gap                                                                       time.Duration
-	selection, keep, verbose, paste, noField, nowait                          bool
+	selection, keep, verbose, paste, noField, nowait, caps, undo              bool
 }
 
 func main() {
@@ -71,6 +72,12 @@ func main() {
 	flag.BoolVar(&o.verbose, "v", false, "log the switcher in detail (inproc)")
 	flag.BoolVar(&o.nowait, "nowait", false, "convert right after typing, before the host shows the word")
 	flag.BoolVar(&o.noField, "nofield", false, "inproc: leave text fields to the clipboard path, as before UI Automation")
+	flag.IntVar(&o.prefix, "prefix", 0, "editors: paste this many characters of text before the phrase, on its line")
+	flag.IntVar(&o.lines, "lines", 1, "editors: the phrase goes on this line; the lines above are pasted")
+	flag.IntVar(&o.sel, "select", 0, "select this many characters before the caret and convert the selection; negative selects rightwards")
+	flag.StringVar(&o.move, "move", "", "keys pressed after typing, before -left: Home, End, Left, Right, separated by commas")
+	flag.BoolVar(&o.caps, "caps", false, "type with Caps Lock on")
+	flag.BoolVar(&o.undo, "undo", false, "press Ctrl+Z after converting and report whether the text came back")
 	flag.Parse()
 	if o.host == "native-serve" {
 		serveNative(o.editor)
@@ -78,15 +85,22 @@ func main() {
 	}
 
 	_, _, _ = procFreeConsole.Call()
+	// The words are typed as lower case keys; Caps Lock changes them.
+	if capsLock() != o.caps {
+		toggleCapsLock()
+		restoreCaps = toggleCapsLock
+		defer restoreCaps()
+	}
+	if o.sel != 0 {
+		o.selection = true
+	}
 
 	reader, err := layouts.Open()
 	check(err, "layouts.Open")
 	installed, err := reader.List()
 	check(err, "layouts.List")
-	want := o.want
-	if want == "" {
-		want = expected(installed, o)
-	}
+	sc := makeScene(installed, o)
+	want := sc.want
 
 	var h host
 	var bystander *shellHost // a terminal that must stay untouched while an editor is tested
@@ -107,6 +121,9 @@ func main() {
 		}
 	case "notepad":
 		h = launchNotepad()
+		if o.editor == "find" {
+			h = findBox(h.(*editorHost))
+		}
 	case "attach":
 		h = attachShell(uint32(o.pid), o.shell, o.click)
 	case "ide":
@@ -125,16 +142,26 @@ func main() {
 		fatal("unknown host %q", o.host)
 	}
 	if !o.keep {
-		defer h.close()
-		if bystander != nil && o.host != "ide" {
-			defer bystander.close()
+		// A host left behind, always on top or holding the focus, spoils the
+		// next run: fatal closes it too.
+		closeHosts = func() {
+			closeHosts = func() {}
+			h.close()
+			if bystander != nil && o.host != "ide" {
+				bystander.close()
+			}
 		}
+		defer func() { closeHosts() }()
 	}
 	if !forceForeground(h.window()) {
 		fatal("could not bring the host to the foreground; it is %#x %q", fg(), className(fg()))
 	}
+	// A window just opened may give its field the focus a moment later.
+	for deadline := time.Now().Add(3 * time.Second); guardFocus != 0 && focusedControl(h.window()) != guardFocus && time.Now().Before(deadline); {
+		time.Sleep(50 * time.Millisecond)
+	}
 	guard = h.window()
-	fmt.Printf("host=%s window=%#x class=%q title=%q want=%q\n", o.host, h.window(), className(h.window()), windowText(h.window()), want)
+	fmt.Printf("host=%s window=%#x class=%q title=%q want=%q\n", o.host, h.window(), className(h.window()), windowText(h.window()), tail(want))
 
 	if sh, ok := h.(*shellHost); ok {
 		awaitPrompt(sh)
@@ -158,8 +185,8 @@ func main() {
 	for i := range o.n {
 		// A layout switch reaches a console window a moment after it is
 		// reported, so a word typed too early is typed once more.
-		typed := keymap.Convert(o.word, find(installed, "00000409"), find(installed, o.layout))
-		for attempt := range 2 {
+		typed := sc.typed
+		for attempt := range 3 {
 			time.Sleep(200 * time.Millisecond) // the layout switch of the last conversion lands late in conhost
 			h.clear()
 			// The old text must be gone first; a busy editor can drop a
@@ -175,6 +202,12 @@ func main() {
 			}
 			activate(reader, o.layout)
 			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+			if sc.above+sc.prefix != "" {
+				pasteText(sc.above + sc.prefix)
+				if !awaitSuffixWithin(h, sc.prefix, 20*time.Second) { // a shell takes a long paste in key by key
+					fmt.Printf("#%d the pasted text did not arrive\n", i+1)
+				}
+			}
 			switch sh, isShell := h.(*shellHost); {
 			case o.paste:
 				pasteText(typed)
@@ -196,10 +229,25 @@ func main() {
 			}
 			fmt.Printf("#%d the word did not arrive\n", i+1)
 		}
+		for _, key := range moves(o.move) {
+			chord(key)
+		}
 		for range o.left {
 			chord(vkLeft)
 		}
-		if o.selection {
+		switch {
+		case o.sel > 0:
+			for range o.sel {
+				chord(vkLeft, vkShift)
+			}
+		case o.sel < 0:
+			for range -o.sel {
+				chord(vkLeft)
+			}
+			for range -o.sel {
+				chord(vkRight, vkShift)
+			}
+		case o.selection:
 			h.selectLine()
 		}
 		if o.ctrl != "" {
@@ -241,6 +289,15 @@ func main() {
 		}
 		active, _ := reader.Active()
 		fmt.Printf("#%d %s %6s layout=%s before=%q after=%q\n", i+1, verdict, settled.Round(time.Millisecond), active, tail(before), tail(after))
+		if !ok && o.verbose {
+			fmt.Printf("   want %q\n   got  %q\n", tail(want), tail(shown))
+		}
+		if o.undo && ok {
+			chord('Z', vkControl)
+			time.Sleep(400 * time.Millisecond)
+			back, _ := h.line()
+			fmt.Printf("#%d undo %v: %q\n", i+1, strings.ReplaceAll(back, caretMark, "") == strings.ReplaceAll(before, caretMark, ""), tail(back))
+		}
 	}
 	slices.Sort(took)
 	if len(took) > 0 {
@@ -251,25 +308,101 @@ func main() {
 	}
 }
 
-// expected is what the switcher should make of the word: typed in the chosen
-// layout, rewritten for the next one in the cycle.
-func expected(installed []*keymap.Layout, o options) string {
-	from := find(installed, o.layout)
-	typed := keymap.Convert(o.word, find(installed, "00000409"), from)
-	if o.presses%len(installed) == 0 {
-		return typed // a full cycle
-	}
-	i := slices.Index(installed, from)
-	to := installed[(i+1)%len(installed)]
-	if o.selection {
-		return keymap.Convert(typed, from, to)
-	}
-	// Only what lies before the caret is converted.
-	runes := []rune(typed)
-	caret := max(len(runes)-o.left, 0)
-	head, word, rest := keymap.SplitLastWord(string(runes[:caret]))
-	return head + keymap.Convert(word, from, to) + rest + string(runes[caret:])
+// scene is the line the stand makes before converting and what the switcher
+// should make of it.
+type scene struct {
+	// prefix is pasted before the phrase on its line, above are pasted
+	// lines before that one, typed is the phrase as the layout types it.
+	prefix, above, typed string
+	// line is the whole last line, and want what it should become.
+	line, want string
 }
+
+const filler = "the quick brown fox jumps over the lazy dog, then naps in the sun. "
+
+func makeScene(installed []*keymap.Layout, o options) scene {
+	from := find(installed, o.layout)
+	var sc scene
+	sc.typed = keymap.Convert(o.word, find(installed, "00000409"), from)
+	if o.caps {
+		sc.typed = swapCase(sc.typed)
+	}
+	if o.prefix > 0 {
+		sc.prefix = strings.Repeat(filler, o.prefix/len(filler)+1)[:o.prefix-1] + " "
+	}
+	for i := 1; i < o.lines; i++ {
+		sc.above += fmt.Sprintf("line %d: %s\r\n", i, filler)
+	}
+	line := []rune(sc.prefix + sc.typed)
+	sc.line = string(line)
+	if o.want != "" {
+		sc.want = o.want
+		return sc
+	}
+	caret := len(line)
+	for _, key := range moves(o.move) {
+		switch key {
+		case vkHome:
+			caret = 0
+		case vkEnd:
+			caret = len(line)
+		case vkLeft:
+			caret = max(caret-1, 0)
+		case vkRight:
+			caret = min(caret+1, len(line))
+		}
+	}
+	caret = max(caret-o.left, 0)
+	var lo int
+	switch {
+	case o.sel != 0:
+		lo = max(caret-abs(o.sel), 0)
+	case o.selection:
+		lo = 0
+	default:
+		head, _, _ := keymap.SplitLastWord(string(line[:caret]))
+		lo = len([]rune(head))
+	}
+	if o.presses%len(installed) == 0 {
+		sc.want = sc.line // a full cycle
+		return sc
+	}
+	to := installed[(slices.Index(installed, from)+1)%len(installed)]
+	sc.want = string(line[:lo]) + keymap.Convert(string(line[lo:caret]), from, to) + string(line[caret:])
+	return sc
+}
+
+// moves parses -move: Home, End, Left and Right, separated by commas.
+func moves(list string) []uint16 {
+	var keys []uint16
+	for name := range strings.SplitSeq(list, ",") {
+		switch strings.TrimSpace(name) {
+		case "":
+		case "Home":
+			keys = append(keys, vkHome)
+		case "End":
+			keys = append(keys, vkEnd)
+		case "Left":
+			keys = append(keys, vkLeft)
+		case "Right":
+			keys = append(keys, vkRight)
+		default:
+			fatal("-move knows Home, End, Left and Right, not %q", name)
+		}
+	}
+	return keys
+}
+
+func swapCase(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsUpper(r) {
+			return unicode.ToLower(r)
+		}
+		return unicode.ToUpper(r)
+	}, s)
+}
+
+func abs(n int) int { return max(n, -n) }
 
 // pasteText puts text into the host through the clipboard, as a user who
 // copied a phrase and pasted it.
@@ -292,7 +425,12 @@ func find(installed []*keymap.Layout, id string) *keymap.Layout {
 	return nil
 }
 
+// activate switches the host to a layout. A console window goes on reporting
+// the layout it had after a switch has taken effect, so the switch is sent
+// whatever it reports.
 func activate(reader *layouts.Reader, id string) {
+	check(reader.Activate(id), "Activate")
+	time.Sleep(100 * time.Millisecond)
 	for range 20 {
 		if active, _ := reader.Active(); active == id {
 			return
@@ -324,6 +462,7 @@ func converter(o options, installed []*keymap.Layout, reader *layouts.Reader) fu
 		s, err := switcher.New(installed, deps, switcher.DefaultOptions(), log)
 		check(err, "switcher.New")
 		return func() {
+			ensureForeground() // a conversion acts on whatever has the focus
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			start := time.Now()
@@ -403,6 +542,10 @@ type textField struct{ *input.Keyboard }
 
 func (textField) Read(around int) (field.Around, error) { return field.Read(around, around) }
 
+func (textField) Replace(right bool, erased, text string) error {
+	return field.Replace(right, erased, text)
+}
+
 type terminal struct{ keyboard *input.Keyboard }
 
 func (t terminal) Open(selection bool) (switcher.Console, error) {
@@ -456,8 +599,10 @@ func awaitLine(h host, want string) bool {
 	return false
 }
 
-func awaitSuffix(h host, suffix string) bool {
-	deadline := time.Now().Add(3 * time.Second)
+func awaitSuffix(h host, suffix string) bool { return awaitSuffixWithin(h, suffix, 3*time.Second) }
+
+func awaitSuffixWithin(h host, suffix string, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		if line, err := h.line(); err == nil && strings.HasSuffix(line, suffix) {
 			time.Sleep(150 * time.Millisecond)
@@ -511,6 +656,25 @@ func check(err error, what string) {
 }
 
 func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "fatal: "+format+"\n", args...)
+	// Keys sent while closing still go only to the host: a fatal among them
+	// ends here, closeHosts being done.
+	closeHosts()
+	restoreCaps()
 	os.Exit(1)
+}
+
+// restoreCaps turns Caps Lock back on if the stand turned it off, and
+// closeHosts closes what the stand opened.
+var restoreCaps, closeHosts = func() {}, func() {}
+
+func capsLock() bool {
+	state, _, _ := procGetKeyState.Call(0x14)
+	return state&1 != 0
+}
+
+func toggleCapsLock() {
+	sendKey(0x14, 0x3A, false)
+	sendKey(0x14, 0x3A, true)
+	time.Sleep(50 * time.Millisecond)
 }

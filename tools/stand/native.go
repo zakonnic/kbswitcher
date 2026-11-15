@@ -26,6 +26,7 @@ var (
 	procPostQuitMessage  = user32.NewProc("PostQuitMessage")
 	procSetFocus         = user32.NewProc("SetFocus")
 	procMoveWindow       = user32.NewProc("MoveWindow")
+	procSendMessageW     = user32.NewProc("SendMessageW")
 )
 
 const (
@@ -75,7 +76,9 @@ func launchNative(kind string) *editorHost {
 	if kind == "rich" {
 		class = "RICHEDIT50W"
 	}
-	pid := createProcess(fmt.Sprintf(`"%s" -host native-serve -editor %s`, os.Args[0], kind), 0)
+	// CREATE_NO_WINDOW: a GUI application has no console, and kbswitcher
+	// would look for shells in one that has.
+	pid := createProcess(fmt.Sprintf(`"%s" -host native-serve -editor %s`, os.Args[0], kind), 0x08000000)
 	var top, field uintptr
 	deadline := time.Now().Add(10 * time.Second)
 	for field == 0 && time.Now().Before(deadline) {
@@ -87,6 +90,7 @@ func launchNative(kind string) *editorHost {
 	if field == 0 {
 		fatal("the native window did not open")
 	}
+	guardFocus = field
 	return &editorHost{hwnd: top,
 		read:    func() (string, error) { return controlText(field), nil },
 		cleanup: func() { _, _, _ = procPostMessage.Call(top, wmClose, 0, 0) },
@@ -132,11 +136,24 @@ func serveNative(kind string) {
 		200, 200, 700, 300, 0, 0, 0, 0)
 	field, _, _ = procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(class))), 0,
 		wsChild|wsVisible|wsVScroll|wsBorder|esMultiline|esAutoVScroll|esWantReturn, 0, 0, 680, 260, top, 0, 0, 0)
+	// Lift the default limits, 30000 and 32767 characters, for documents
+	// past 65535.
+	if kind == "rich" {
+		_, _, _ = procSendMessageW.Call(field, 0x0435, 0, 0x7FFFFFFF) // EM_EXLIMITTEXT
+	} else {
+		_, _, _ = procSendMessageW.Call(field, 0x00C5, 0, 0) // EM_SETLIMITTEXT
+	}
 	_, _, _ = procSetFocus.Call(field)
+	// STAND_SLOW=ms makes every key press take that long, as in a busy
+	// application, so that the keys sent after it pile up in the queue.
+	slow, _ := time.ParseDuration(os.Getenv("STAND_SLOW"))
 	var m msg
 	for {
 		if r, _, _ := procGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0); int32(r) <= 0 {
 			return
+		}
+		if m.message == 0x0100 && slow > 0 { // WM_KEYDOWN
+			time.Sleep(slow)
 		}
 		_, _, _ = procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
 		_, _, _ = procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))

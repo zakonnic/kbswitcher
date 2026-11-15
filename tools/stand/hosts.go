@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/zakonnic/kbswitcher/internal/platform/field"
 )
 
 // host is a window whose text the stand types into and reads back.
@@ -191,7 +193,10 @@ func openVSCode(dir, shell string) *vscode {
   "terminal.integrated.defaultProfile.windows": %q,
   "files.autoSave": "afterDelay",
   "files.autoSaveDelay": 50,
-  "chat.disableAIFeatures": true
+  "chat.disableAIFeatures": true,
+  "editor.autoClosingBrackets": "never",
+  "editor.autoClosingQuotes": "never",
+  "editor.autoSurround": "never"
 }
 `, profile)
 	check(os.WriteFile(filepath.Join(dir, "user/User/settings.json"), []byte(settings), 0o600), "settings")
@@ -339,19 +344,19 @@ func launchBrowser(profile, editor string, load int) *editorHost {
 			if !ok {
 				return "", fmt.Errorf("the page title is %q", windowText(hwnd))
 			}
-			return title, nil
+			return strings.ReplaceAll(strings.TrimSuffix(title, "¶"), "⏎", "\n"), nil
 		},
 		cleanup: func() { _, _, _ = procPostMessage.Call(hwnd, 0x0010, 0, 0) }, // WM_CLOSE
 	}
 }
 
-// launchNotepad opens a fresh Notepad tab (Windows 11 Notepad adds it to a
-// window already open) and closes only that tab afterwards.
+// launchNotepad opens a fresh Notepad window or tab and works in its editor
+// only: Windows 11 Notepad restores the tabs of the last session, the user's
+// unsaved text among them. The editor is emptied by message, never by keys
+// that would reach whichever tab has the focus, and its tab is closed only
+// while the focus is in it.
 func launchNotepad() *editorHost {
-	// A new tab would join the user's own window.
-	if len(topLevel("Notepad", 0)) > 0 {
-		fatal("a Notepad window is open; the stand leaves it alone (use -host browser)")
-	}
+	before := topLevel("Notepad", 0)
 	createProcess("notepad.exe", 0)
 	var hwnd, edit uintptr
 	deadline := time.Now().Add(10 * time.Second)
@@ -362,7 +367,7 @@ func launchNotepad() *editorHost {
 			if c == 0 {
 				c = childOfClass(h, "Edit")
 			}
-			if c != 0 && controlText(c) == "" {
+			if c != 0 && controlText(c) == "" && (!before[h] || h == fg()) {
 				hwnd, edit = h, c
 			}
 		}
@@ -370,14 +375,43 @@ func launchNotepad() *editorHost {
 	if edit == 0 {
 		fatal("Notepad shows no empty edit control")
 	}
-	return &editorHost{hwnd: hwnd, read: func() (string, error) { return controlText(edit), nil },
+	guardFocus = edit
+	wipe := func() { setControlText(edit, "") }
+	return &editorHost{hwnd: hwnd, read: func() (string, error) { return controlText(edit), nil }, wipe: wipe,
 		cleanup: func() {
-			if !forceForeground(hwnd) {
-				return
+			wipe()
+			if forceForeground(hwnd) && focusedControl(hwnd) == edit && controlText(edit) == "" {
+				chord('W', vkControl) // an empty tab closes without asking
 			}
+		}}
+}
+
+// findBox moves to Notepad's search box, a XAML text box of Windows App SDK,
+// and reads it through UI Automation.
+func findBox(notepad *editorHost) *editorHost {
+	if !forceForeground(notepad.hwnd) {
+		fatal("Notepad cannot be brought to the front")
+	}
+	guard, guardFocus = notepad.hwnd, 0
+	chord('F', vkControl)
+	time.Sleep(700 * time.Millisecond)
+	read := func() (string, error) {
+		a, err := field.Read(4000, 4000)
+		return a.Before + a.Selected + a.After, err
+	}
+	if _, err := read(); err != nil {
+		fatal("the search box cannot be read: %v", err)
+	}
+	return &editorHost{hwnd: notepad.hwnd, read: read,
+		wipe: func() {
 			chord('A', vkControl)
 			chord(vkDelete)
-			chord('W', vkControl) // an empty tab closes without asking
+		},
+		cleanup: func() {
+			chord('A', vkControl)
+			chord(vkDelete)
+			chord(vkEscape)
+			notepad.close()
 		}}
 }
 

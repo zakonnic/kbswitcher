@@ -31,6 +31,7 @@ var (
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
 	procGetClassNameW            = user32.NewProc("GetClassNameW")
 	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
 	procSendMessageTimeoutW      = user32.NewProc("SendMessageTimeoutW")
 	procSendInput                = user32.NewProc("SendInput")
 	procPostMessage              = user32.NewProc("PostMessageW")
@@ -38,6 +39,8 @@ var (
 	procSetCursorPos             = user32.NewProc("SetCursorPos")
 	procMouseEvent               = user32.NewProc("mouse_event")
 	procSetProcessDPIAware       = user32.NewProc("SetProcessDPIAware")
+	procGetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
+	procGetKeyState              = user32.NewProc("GetKeyState")
 )
 
 type keyboardInput struct {
@@ -193,15 +196,40 @@ func controlText(hwnd uintptr) string {
 	return windows.UTF16ToString(buf)
 }
 
+// setControlText replaces an edit control's text through WM_SETTEXT, which
+// reaches that control whatever has the focus.
+func setControlText(hwnd uintptr, text string) {
+	const wmSetText = 0x000C
+	p := windows.StringToUTF16Ptr(text)
+	var got uintptr
+	_, _, _ = procSendMessageTimeoutW.Call(hwnd, wmSetText, 0, uintptr(unsafe.Pointer(p)), 2, 1000, uintptr(unsafe.Pointer(&got)))
+}
+
+// focusedControl is the window with the keyboard focus in top's thread.
+func focusedControl(top uintptr) uintptr {
+	var info struct {
+		size, flags                                        uint32
+		active, focus, capture, menuOwner, moveSize, caret uintptr
+		caretRect                                          [4]int32
+	}
+	info.size = uint32(unsafe.Sizeof(info))
+	thread, _, _ := procGetWindowThreadProcessID.Call(top, 0)
+	if ok, _, _ := procGetGUIThreadInfo.Call(thread, uintptr(unsafe.Pointer(&info))); ok == 0 {
+		return 0
+	}
+	return info.focus
+}
+
 func forceForeground(hwnd uintptr) bool {
 	for range 20 {
 		if fg() == hwnd {
 			return true
 		}
 		_, _, _ = procShowWindow.Call(hwnd, 9) // SW_RESTORE
-		sendKey(0x12, 0x38, false)
+		// Any input of its own lets a process take the foreground. A mouse
+		// move by nothing: a lone Alt would open a menu bar (Notepad's).
+		_, _, _ = procMouseEvent.Call(0x1, 0, 0, 0, 0) // MOUSEEVENTF_MOVE
 		_, _, _ = procSetForegroundWindow.Call(hwnd)
-		sendKey(0x12, 0x38, true)
 		time.Sleep(150 * time.Millisecond)
 		if fg() == hwnd {
 			return true
@@ -228,8 +256,11 @@ func className(hwnd uintptr) string {
 	return windows.UTF16ToString(buf[:n])
 }
 
+// windowText reads a title whole: the browser and form hosts mirror lines of
+// thousands of characters into it.
 func windowText(hwnd uintptr) string {
-	var buf [512]uint16
+	size, _, _ := procGetWindowTextLengthW.Call(hwnd)
+	buf := make([]uint16, size+1)
 	n, _, _ := procGetWindowTextW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	return windows.UTF16ToString(buf[:n])
 }
@@ -250,16 +281,21 @@ var shifted = map[rune]rune{
 // caretMark stands where the caret is when text follows it.
 const caretMark = "‸"
 
-// guard is the window every synthetic key press must go to; the stand stops
+// guard is the window every synthetic key press must go to, and guardFocus,
+// when known, the control in it that must have the focus; the stand stops
 // rather than type into anything else.
-var guard uintptr
+var guard, guardFocus uintptr
 
 func ensureForeground() {
-	if guard == 0 || fg() == guard {
+	if guard == 0 {
 		return
 	}
-	if !forceForeground(guard) {
+	if fg() != guard && !forceForeground(guard) {
 		fatal("the foreground moved to %#x %q %q; stopping before typing into it", fg(), className(fg()), windowText(fg()))
+	}
+	if guardFocus != 0 && focusedControl(guard) != guardFocus {
+		fatal("the focus in %q is on %#x %q, not on the field; stopping before typing into it",
+			windowText(guard), focusedControl(guard), className(focusedControl(guard)))
 	}
 }
 
@@ -319,7 +355,9 @@ const (
 	vkControl = 0x11
 	vkEscape  = 0x1B
 	vkEnd     = 0x23
+	vkHome    = 0x24
 	vkLeft    = 0x25
+	vkRight   = 0x27
 	vkDelete  = 0x2E
 	vkPause   = 0x13
 )
@@ -329,7 +367,7 @@ func sendKey(vk, scan uint16, up bool) {
 	if up {
 		flags |= 2
 	}
-	if vk == vkEnd || vk == vkDelete || vk == 0x24 || vk == 0x25 {
+	if vk == vkEnd || vk == vkDelete || vk == vkHome || vk == vkLeft || vk == vkRight {
 		flags |= 1 // extended
 	}
 	ev := keyboardInput{typ: 1, vk: vk, scan: scan, flags: flags}

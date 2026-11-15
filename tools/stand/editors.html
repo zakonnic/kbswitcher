@@ -22,7 +22,8 @@
 const params = new URLSearchParams(location.search);
 const kind = params.get("editor") || "prosemirror";
 const host = document.querySelector("#editor");
-const show = text => { document.title = "stand:" + text.replace(/\r?\n/g, "⏎"); };
+// The title loses spaces at its ends; the mark keeps the last ones.
+const show = text => { document.title = "stand:" + text.replace(/\r?\n/g, "⏎") + "¶"; };
 document.querySelector("#what").textContent = "editor: " + kind;
 
 async function prosemirror() {

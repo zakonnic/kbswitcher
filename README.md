@@ -115,11 +115,19 @@ up only when one of them is pressed.
 
 When the hotkey fires, it does what you would do by hand, in one of three ways, depending on where the caret is.
 
-**A text field that tells its text** (on Windows: browsers and Electron applications, WPF, WinUI, RichEdit, the
-classic edit controls of dialogs and Windows Forms). kbswitcher reads the line around the caret the way a screen
-reader does — UI Automation, or the edit control's own messages — and then types the fix: Backspace over the word,
-and the word in the right layout. The clipboard is not touched and no shortcut is pressed. The selection hotkey
-erases the selection with Backspace and types its conversion.
+**A text field that tells its text** (on Windows: browsers and Electron applications, WPF, WinUI, Notepad and other
+RichEdit fields, the classic edit controls of dialogs and Windows Forms). kbswitcher reads the line around the caret
+the way a screen reader does — UI Automation, or the edit control's own messages — and then writes the fix. The
+clipboard is not touched and no shortcut is pressed. How the fix is written depends on what the field is, which
+Windows reports by the class of the focused window:
+
+- A system edit control (`Edit`, `RichEdit`) is changed through its own messages: the word is selected by position
+  and replaced, after checking that it holds exactly that word. No character is typed, so nothing depends on how the
+  application handles typed input (Notepad turns typed characters that queue up while it is busy into copies of the
+  last one). One `Ctrl`+`Z` undoes the conversion of a word.
+- Any other field gets keys: Backspace over the word, and the word in the right layout.
+
+The selection hotkey erases the selection with Backspace and puts its conversion in its place the same way.
 
 A field may not show yet what was typed into it a moment ago: a busy page takes in keys late, and its accessibility
 tree is later still (up to 150 ms measured). So kbswitcher presses `Shift`+`Left` and waits for the field to show one
@@ -156,9 +164,10 @@ on Windows, `UCKeyTranslate` on macOS, the XKB keymap on X11.
   IDE's editor that costs a tenth of a second. A Tabby pane whose shell does not answer (an empty line, a program
   running in it) is left alone. With the caret at the very start of a shell's line that probe leaves it one
   character to the right. On macOS and Linux every terminal takes the clipboard path.
-- **Retyping is typing.** In a field that tells its text, the fix is typed, so an editor treats it as typed: a code
-  editor may close a bracket or open its completion list, as it would for you. A word with combining marks or emoji
-  in it, and a selection over several lines, go through the clipboard instead.
+- **Retyping is typing.** In a field that tells its text and is not a system edit control, the fix is typed, so an
+  editor treats it as typed: a code editor may close a bracket or open its completion list, as it would for you. A
+  word with combining marks or emoji in it goes through the clipboard instead there. A selection over several lines
+  goes through the clipboard in any field.
 - **Clipboard readers.** On the clipboard path, a program that opens the clipboard on every change (WSLg, remote
   desktop clients, clipboard managers) can hold it at the moment the application copies or pastes, and a classic
   edit control does not try again. Fields that tell their text avoid the clipboard for exactly this reason.
