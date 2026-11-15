@@ -113,7 +113,25 @@ kbswitcher asks the operating system to notify it about two key combinations, th
 selection modifier — `RegisterHotKey` on Windows, `RegisterEventHotKey` on macOS, `XGrabKey` on X11 — and is woken
 up only when one of them is pressed.
 
-When the hotkey fires, it does what you would do by hand:
+When the hotkey fires, it does what you would do by hand, in one of three ways, depending on where the caret is.
+
+**A text field that tells its text** (on Windows: browsers and Electron applications, WPF, WinUI, RichEdit, the
+classic edit controls of dialogs and Windows Forms). kbswitcher reads the line around the caret the way a screen
+reader does — UI Automation, or the edit control's own messages — and then types the fix: Backspace over the word,
+and the word in the right layout. The clipboard is not touched and no shortcut is pressed. The selection hotkey
+erases the selection with Backspace and types its conversion.
+
+A field may not show yet what was typed into it a moment ago: a busy page takes in keys late, and its accessibility
+tree is later still (up to 150 ms measured). So kbswitcher presses `Shift`+`Left` and waits for the field to show one
+character selected. That key queues behind everything typed before it, and nothing else you type or press selects a
+single character, so the field then shows all of it. The `Right` key that drops the selection opens the burst that
+retypes the word. A field that does not show the selection within a second is left alone.
+
+**A terminal** (on Windows). The shell's input line is read and rewritten in place through the console API; no
+key reaches the shell but the ones it would get from you.
+
+**Anything else** (editors that draw their own text, such as VS Code's and the JetBrains IDEs', and every
+application on macOS and Linux) goes through the clipboard:
 
 1. select from the caret to the start of the line, with one key press, and copy (skipped for the selection hotkey —
    you have already selected the text);
@@ -122,13 +140,10 @@ When the hotkey fires, it does what you would do by hand:
 4. paste the result where the word was, and give your clipboard back.
 
 The line is selected by a single key press and the word is cut rather than pasted over because of editors driven by
-scripts, such as the input boxes of Claude and ChatGPT: they learn of a keyboard selection late, and until then copy
-one range and paste over another. A selection made by one press cannot be caught halfway, and what a cut puts on the
-clipboard is what it removed.
-
-On Windows, what kbswitcher puts on the clipboard along the way is marked so that clipboard history and cloud
-clipboard sync leave it out, and the clipboard is given back a quarter of a second after the pasted text was read
-off it. A Windows console skips the clipboard altogether: its input line is read and rewritten in place.
+scripts: they learn of a keyboard selection late, and until then copy one range and paste over another. A selection
+made by one press cannot be caught halfway, and what a cut puts on the clipboard is what it removed. On Windows,
+what kbswitcher puts on the clipboard along the way is marked so that clipboard history and cloud clipboard sync
+leave it out, and the clipboard is given back a quarter of a second after the pasted text was read off it.
 
 The layouts come from the same tables the operating system uses to turn key presses into characters: `ToUnicodeEx`
 on Windows, `UCKeyTranslate` on macOS, the XKB keymap on X11.
@@ -136,9 +151,17 @@ on Windows, `UCKeyTranslate` on macOS, the XKB keymap on X11.
 ## Limitations
 
 - **Terminals kbswitcher cannot read.** Git Bash in its own window (mintty) has no Windows console at all, and there
-  the hotkey does nothing. A JetBrains IDE, or a terminal that draws its own window, does not say where its focus
-  is, so kbswitcher presses Left and Right once to see whether a shell moves its caret; with the focus in the IDE's
-  editor that costs a tenth of a second. On macOS and Linux every terminal takes the clipboard path.
+  the hotkey does nothing. A JetBrains IDE, Tabby, or a terminal that draws its own window, does not say where its
+  focus is, so kbswitcher presses Left and Right once to see whether a shell moves its caret; with the focus in the
+  IDE's editor that costs a tenth of a second. A Tabby pane whose shell does not answer (an empty line, a program
+  running in it) is left alone. With the caret at the very start of a shell's line that probe leaves it one
+  character to the right. On macOS and Linux every terminal takes the clipboard path.
+- **Retyping is typing.** In a field that tells its text, the fix is typed, so an editor treats it as typed: a code
+  editor may close a bracket or open its completion list, as it would for you. A word with combining marks or emoji
+  in it, and a selection over several lines, go through the clipboard instead.
+- **Clipboard readers.** On the clipboard path, a program that opens the clipboard on every change (WSLg, remote
+  desktop clients, clipboard managers) can hold it at the moment the application copies or pastes, and a classic
+  edit control does not try again. Fields that tell their text avoid the clipboard for exactly this reason.
 - **The last word is looked for on the caret's line only.** With the caret at the very start of a line the hotkey
   does nothing.
 - **Selections in a terminal.** A selection made with the mouse belongs to the terminal window and no shell knows of
@@ -161,6 +184,8 @@ internal/switcher        what a hotkey press does, start to finish
 internal/platform        everything the operating system provides:
     hotkey                 registering a system-wide key combination
     input                  pressing keys in the focused window
+    field                  reading the focused text field around the caret, without the clipboard
+    uia                    a small UI Automation client
     console                reading and rewriting a Windows console input line
     layouts                reading the installed layouts and their characters
     clip                   borrowing and giving back the clipboard
@@ -169,7 +194,8 @@ internal/autostart       the "start with the session" entry
 internal/singleinstance  the lock that keeps a second copy from running
 internal/updater         checking for and installing a release
 internal/ui              tray icon, Settings and About
-tools/stand              Windows test stand for terminals and editors
+tools/stand              Windows test stand for terminals, editors and text fields
+tools/uiaread            prints what UI Automation reports about the focused field
 ```
 
 The conversion core has no dependency on any operating system and is covered by tests, including a simulated text

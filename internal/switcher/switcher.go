@@ -1,6 +1,8 @@
-// Package switcher performs the conversion a hotkey asks for: select, copy,
-// cut, convert, paste, as a user would by hand. Nothing is read from the
-// keyboard or from any window at any other time.
+// Package switcher performs the conversion a hotkey asks for, as a user would
+// by hand: in a text field that tells its text, retype the word; in a
+// terminal, rewrite the shell's input line; anywhere else select, copy, cut,
+// convert and paste. Nothing is read from the keyboard or from any window at
+// any other time.
 package switcher
 
 import (
@@ -29,10 +31,10 @@ type Keyboard interface {
 	// SelectToLineStart extends the selection to the start of the line, with
 	// a single key press.
 	SelectToLineStart() error
-	// SelectCharsLeft extends the selection by n characters towards the start
-	// of the line.
-	SelectCharsLeft(n int) error
-	// CollapseSelectionRight drops the selection, leaving the caret at its end.
+	// SelectRight moves the end of the selection that SelectToLineStart moved
+	// n characters to the right, as Shift+Right does.
+	SelectRight(n int) error
+	// CollapseSelectionRight drops the selection with a Right key.
 	CollapseSelectionRight() error
 	// Copy presses the copy shortcut. With gentle set it is one that no
 	// shell takes for an interrupt, where there is such a shortcut.
@@ -119,9 +121,13 @@ type Options struct {
 	// included, with the paste itself a moment behind.
 	PasteTimeout time.Duration
 	PasteSettle  time.Duration
-	// MaxNarrowedChars bounds the "select exactly the word" step. Beyond it
-	// the whole line up to the caret is replaced, which costs formatting in
-	// rich text editors but never sends hundreds of key presses.
+	// FieldTimeout bounds the wait for a text field to show the effect of a
+	// key.
+	FieldTimeout time.Duration
+	// MaxNarrowedChars bounds the "select exactly the word" step: how much
+	// of the line before the word is stepped over. Beyond it the whole line
+	// up to the caret is replaced, which costs formatting in rich text editors
+	// but never sends hundreds of key presses.
 	MaxNarrowedChars int
 }
 
@@ -133,17 +139,19 @@ func DefaultOptions() Options {
 		KeyDelay:         0,
 		PasteTimeout:     time.Second,
 		PasteSettle:      250 * time.Millisecond,
+		FieldTimeout:     time.Second,
 		MaxNarrowedChars: 120,
 	}
 }
 
-// Deps are the platform pieces a conversion works through. Terminal is
-// optional; without it every window takes the clipboard path.
+// Deps are the platform pieces a conversion works through. Terminal and
+// Field are optional; without them every window takes the clipboard path.
 type Deps struct {
 	Layouts   Layouts
 	Keyboard  Keyboard
 	Clipboard Clipboard
 	Terminal  Terminal
+	Field     Field
 }
 
 // Switcher converts text between the layouts installed on the machine.
@@ -217,27 +225,9 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 	if console != nil {
 		defer s.release(console)
 		target, err = s.convertInConsole(console, lastWordOnly)
-	} else {
-		// The clipboard goes back to the user whatever happens, but without
-		// holding anything up: the layout is switched and the next press is
-		// taken while the pasted text is still given time to be read. A press
-		// that needs the clipboard again waits for it to be back first.
-		s.awaitClipboard()
-		snapshot := s.deps.Clipboard.Snapshot(ctx)
-		var pasted <-chan struct{}
-		returned := make(chan struct{})
-		s.returned = returned
-		defer func() { go s.restore(context.WithoutCancel(ctx), snapshot, pasted, returned) }()
-		target, err = s.convertByClipboard(ctx, lastWordOnly, gentle, &pasted)
-		if !lastWordOnly && errors.Is(err, ErrNothingToConvert) {
-			// Nothing was selected. A window that is an editor and a terminal
-			// at once was not asked about its focus so far; with no selection
-			// to spare it can be, and a shell's whole line converted.
-			if console, _, _ := s.console(false); console != nil {
-				defer s.release(console)
-				target, err = s.convertInConsole(console, false)
-			}
-		}
+	} else if target, err = s.convertInField(lastWordOnly); errors.Is(err, ErrNoField) {
+		s.log.Debug("taking the clipboard path", "reason", err)
+		target, err = s.convertWithClipboard(ctx, lastWordOnly, gentle)
 	}
 	if err != nil {
 		return err
@@ -246,6 +236,33 @@ func (s *Switcher) convert(ctx context.Context, lastWordOnly bool) error {
 		s.activate(target)
 	}
 	return nil
+}
+
+// convertWithClipboard runs the clipboard path. The clipboard goes back to
+// the user whatever happens, but without holding anything up: the layout is
+// switched and the next press is taken while the pasted text is still given
+// time to be read. A press that needs the clipboard again waits for it to be
+// back first.
+func (s *Switcher) convertWithClipboard(ctx context.Context, lastWordOnly, gentle bool) (*keymap.Layout, error) {
+	s.awaitClipboard()
+	snapshot := s.deps.Clipboard.Snapshot(ctx)
+	var pasted <-chan struct{}
+	returned := make(chan struct{})
+	s.returned = returned
+	defer func() { go s.restore(context.WithoutCancel(ctx), snapshot, pasted, returned) }()
+	target, err := s.convertByClipboard(ctx, lastWordOnly, gentle, &pasted)
+	if lastWordOnly || !errors.Is(err, ErrNothingToConvert) {
+		return target, err
+	}
+	// Nothing was selected. A window that is an editor and a terminal at once
+	// was not asked about its focus so far; with no selection to spare it
+	// can be, and a shell's whole line converted.
+	console, _, _ := s.console(false)
+	if console == nil {
+		return target, err
+	}
+	defer s.release(console)
+	return s.convertInConsole(console, false)
 }
 
 func (s *Switcher) release(console Console) {
@@ -422,13 +439,15 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly, gentle 
 		return nil, errors.Join(ErrNothingToConvert, keys.CollapseSelectionRight())
 	}
 	// Cutting the word alone keeps the formatting of what is before it in
-	// rich text editors.
+	// rich text editors. Shift+Right moves the end of the selection that
+	// Shift+Home moved, whatever an application makes of a plain arrow over a
+	// selection (a classic edit control moves its caret on from the start of
+	// the line), and an editor caught halfway through the presses has more
+	// selected, never less. The count holds where each character is one caret
+	// step.
 	steps := utf8.RuneCountInString(word + tail)
-	if head != "" && steps <= s.options.MaxNarrowedChars {
-		if err := keys.CollapseSelectionRight(); err != nil {
-			return nil, err
-		}
-		if err := keys.SelectCharsLeft(steps); err != nil {
+	if n := utf8.RuneCountInString(head); n > 0 && n <= s.options.MaxNarrowedChars && oneKeyEach(head) {
+		if err := keys.SelectRight(n); err != nil {
 			return nil, err
 		}
 		s.pause()
@@ -437,7 +456,8 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly, gentle 
 	for whole := false; ; whole = true {
 		cut, err := s.cut(ctx)
 		if err != nil {
-			// The selection goes, or the next key typed would replace it.
+			// The selection goes, or the next key typed would replace it. One
+			// Right drops it wherever it stands, even after a late cut.
 			return nil, errors.Join(err, keys.CollapseSelectionRight())
 		}
 		got := lineBreaks.Replace(cut)
@@ -454,9 +474,7 @@ func (s *Switcher) convertByClipboard(ctx context.Context, lastWordOnly, gentle 
 			// Not the text that was read: the caret is somewhere else by now.
 			return nil, ErrNotSelected
 		}
-		// The end of the word only: the application was caught halfway
-		// through the presses that selected it. The line is cut whole, by
-		// one press.
+		// Less than the word: the line is cut whole, by one press.
 		if err := keys.SelectToLineStart(); err != nil {
 			return nil, err
 		}

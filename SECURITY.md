@@ -45,7 +45,39 @@ that the current ones reach it.
 
 ## What it reads, and when
 
-Only on a hotkey press. In an ordinary application it goes through the
+Only on a hotkey press, and only from the focused window. Where the focused
+text field tells its text, kbswitcher reads that text and types the fix; in a
+terminal it goes through the console API (next section); anywhere else it goes
+through the clipboard.
+
+### A text field that tells its text (Windows)
+
+`internal/platform/field` asks for the field that has the keyboard focus:
+
+1. through UI Automation: the focused element, whether it is a password field
+   (then nothing is done at all), whether it is editable, whether it is large
+   enough to show its own text (an editor that draws its text elsewhere keeps
+   a tiny stand-in element whose text is not what you see, and is left to the
+   clipboard path), and the selection with at most 300 characters on either
+   side of it (`internal/platform/uia`);
+2. for a classic edit control, which tells UI Automation nothing of its text:
+   the control's style (`ES_PASSWORD` stops everything, `ES_READONLY` leaves
+   the field alone), the selection (`EM_GETSEL`) and the one line it starts
+   on (`EM_GETLINE`), not the rest of the field.
+
+The text read is converted in memory and dropped. The fix is typed with
+`SendInput`: `Shift`+`Left` and the `Right` that drops the one character it
+selects, so that the field has taken in everything typed before the hotkey
+(`internal/switcher/field.go`), then Backspace over the word and the converted
+characters as Unicode input.
+The clipboard is not touched on this path. The characters typed are visible to
+any low-level keyboard hook on the machine, as every key you type is; a
+keylogger learns nothing it had not seen when the word was typed the first
+time.
+
+### Anything else: the clipboard
+
+In an ordinary application it goes through the
 clipboard:
 
 1. the current clipboard content is copied aside, so it can be given back
@@ -64,7 +96,7 @@ clipboard:
    background; a hotkey press that needs the clipboard waits for it.
 
 The whole sequence lives in `internal/switcher/switcher.go` and takes about
-100 ms. Text is never written to disk, never sent anywhere, and never logged:
+100 ms, plus a quarter of a second for the clipboard to be given back. Text is never written to disk, never sent anywhere, and never logged:
 the log records how many characters were converted and between which layouts,
 not what they were, and no window title or console content either.
 
@@ -102,9 +134,11 @@ only**, kbswitcher does this (`internal/platform/console`):
    a terminal takes the clipboard path
    (`internal/platform/console/uia_windows.go`). A window that offers no such
    answer, a JetBrains IDE or a terminal with a renderer of its own, is sent a
-   Left key and then a Right key: the console whose caret moves has the focus,
-   and when none does the window takes the clipboard path
-   (`internal/platform/console/probe_windows.go`);
+   Left key and then a Right key: the console whose caret moved one character
+   back and returned has the focus. When none does, a JetBrains IDE takes the
+   clipboard path with `Ctrl+Insert` for copying, which no shell takes for an
+   interrupt, and a Chromium window whose focused element names nothing about
+   itself (Tabby) is left alone (`internal/platform/console/probe_windows.go`);
 4. it writes a Home key (and End, for a selection) into that console's input
    buffer with `WriteConsoleInputW` and reads the cells between the places the
    shell puts the caret with `ReadConsoleOutputCharacterW` — the input line the
@@ -125,10 +159,11 @@ that they cannot reach whatever reads the console next; a key the user typed
 in that second goes with them.
 
 The first UI Automation question makes a Chromium application build its
-accessibility tree, as any assistive tool does. kbswitcher asks only for the
-focused element's class name, process and rectangle, the class names of the
-few elements above it, and for Windows Terminal the rows around the caret; it
-never reads the content of an editor that way.
+accessibility tree, as any assistive tool does. To find a terminal kbswitcher
+asks only for the focused element's class name, process and rectangle, the
+class names of the few elements above it, and for Windows Terminal the rows
+around the caret. The text of an ordinary field is read only as described
+above: around its caret, on a hotkey press.
 
 ## Permissions it asks for
 

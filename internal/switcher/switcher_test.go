@@ -79,8 +79,8 @@ type fakeEditor struct {
 	// behind counts the shortcuts left before the model follows the screen.
 	behind    int
 	clipboard *fakeClipboard
-	// halfway makes a lagging editor take in half of a selection made by
-	// several key presses at once, and the rest when it catches up.
+	// halfway makes a lagging editor take in half of a selection change made
+	// by several key presses at once, and the rest when it catches up.
 	halfway bool
 	// deaf makes the editor ignore copy and cut; uncuttable, cut alone.
 	deaf, uncuttable bool
@@ -139,12 +139,14 @@ func (e *fakeEditor) SelectToLineStart() error {
 	return nil
 }
 
-// SelectCharsLeft takes several key presses, so a lagging editor can be
-// caught with only some of them taken in.
-func (e *fakeEditor) SelectCharsLeft(n int) error {
-	e.moved(max(0, e.shown-n))
+// SelectRight takes several key presses, so a lagging editor can be caught
+// with only some of them taken in: with less of the line stepped over, more
+// of it selected.
+func (e *fakeEditor) SelectRight(n int) error {
+	from := e.shown
+	e.moved(min(from+n, e.caret))
 	if e.halfway && e.lag != 0 && n > 1 {
-		e.model = e.caret - n/2
+		e.model = min(from+n/2, e.caret)
 	}
 	return nil
 }

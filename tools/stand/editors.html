@@ -1,0 +1,166 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stand:</title>
+<style>
+  body { font: 18px sans-serif; margin: 24px; }
+  #editor, textarea, input { border: 1px solid #888; padding: 8px; width: 90%; font: inherit; }
+  #editor { min-height: 120px; white-space: pre-wrap; }
+  textarea { height: 120px; }
+  .ProseMirror, .cm-editor, .ql-editor, [contenteditable] { outline: none; min-height: 100px; }
+  .placeholder:empty::before { content: "Ask anything"; color: #888; }
+</style>
+</head>
+<body>
+<p id="what"></p>
+<div id="editor"></div>
+<script type="module">
+// Editors for tools/stand, one per page, picked by ?editor=. The text is
+// mirrored into the window title, line breaks as ⏎. Needs the network for the
+// script-driven editors, which come from esm.sh.
+const params = new URLSearchParams(location.search);
+const kind = params.get("editor") || "prosemirror";
+const host = document.querySelector("#editor");
+const show = text => { document.title = "stand:" + text.replace(/\r?\n/g, "⏎"); };
+document.querySelector("#what").textContent = "editor: " + kind;
+
+async function prosemirror() {
+  // One build of each shared package. prosemirror-view asks for its own
+  // prosemirror-state built against model and transform only; a second copy
+  // of it breaks every instanceof check, and the view then refuses Backspace.
+  const deps = "?deps=prosemirror-model@1.25.1,prosemirror-transform@1.10.4";
+  const {EditorState, TextSelection} = await import("https://esm.sh/prosemirror-state@1.4.3" + deps);
+  const {EditorView} = await import("https://esm.sh/prosemirror-view@1.38.1" + deps);
+  const {schema} = await import("https://esm.sh/prosemirror-schema-basic@1.2.4" + deps);
+  const {keymap} = await import("https://esm.sh/prosemirror-keymap@1.2.2" + deps);
+  const {baseKeymap} = await import("https://esm.sh/prosemirror-commands@1.7.1" + deps);
+  const {history, undo, redo} = await import("https://esm.sh/prosemirror-history@1.4.1" + deps);
+  const view = new EditorView(host, {
+    state: EditorState.create({schema, plugins: [history(), keymap({"Mod-z": undo, "Mod-y": redo}), keymap(baseKeymap)]}),
+    dispatchTransaction(tr) {
+      view.updateState(view.state.apply(tr));
+      const doc = view.state.doc;
+      show(doc.textBetween(0, doc.content.size, "\n"));
+    },
+  });
+  if (!(view.state.selection instanceof TextSelection)) throw new Error("two copies of prosemirror-state");
+  view.focus();
+}
+
+async function codemirror() {
+  const {EditorView, minimalSetup} = await import("https://esm.sh/codemirror@6.0.1");
+  const view = new EditorView({
+    parent: host,
+    extensions: [minimalSetup, EditorView.updateListener.of(u => show(u.state.doc.toString()))],
+  });
+  view.focus();
+}
+
+async function lexical() {
+  const L = await import("https://esm.sh/lexical@0.17.1");
+  const {registerPlainText} = await import("https://esm.sh/@lexical/plain-text@0.17.1?deps=lexical@0.17.1");
+  const {registerHistory, createEmptyHistoryState} = await import("https://esm.sh/@lexical/history@0.17.1?deps=lexical@0.17.1");
+  host.contentEditable = "true";
+  const editor = L.createEditor({namespace: "stand", onError: e => console.error(e)});
+  editor.setRootElement(host);
+  registerPlainText(editor);
+  registerHistory(editor, createEmptyHistoryState(), 300);
+  editor.registerUpdateListener(({editorState}) => editorState.read(() => show(L.$getRoot().getTextContent())));
+  host.focus();
+}
+
+async function quill() {
+  const {default: Quill} = await import("https://esm.sh/quill@2.0.2");
+  const q = new Quill(host, {});
+  q.on("text-change", () => show(q.getText().replace(/\n$/, "")));
+  q.focus();
+}
+
+function plain(tag) {
+  const field = document.createElement(tag);
+  field.placeholder = "Ask anything";
+  host.replaceWith(field);
+  field.id = "editor";
+  field.addEventListener("input", () => show(field.value));
+  field.focus();
+}
+
+function editable() {
+  host.contentEditable = "true";
+  host.className = "placeholder";
+  host.addEventListener("input", () => show(host.innerText.replace(/\n$/, "")));
+  host.focus();
+}
+
+// A React-style controlled input: every change goes through state and is
+// written back, which is what breaks naive value setters.
+function controlled() {
+  const field = document.createElement("input");
+  host.replaceWith(field);
+  field.id = "editor";
+  let state = "";
+  field.addEventListener("input", () => {
+    const caret = field.selectionStart;
+    state = field.value;
+    field.value = state;
+    field.setSelectionRange(caret, caret);
+    show(state);
+  });
+  field.focus();
+}
+
+// Not editable: a focusable block of text, and a read-only field. Keys typed
+// here must change nothing.
+function fixed() {
+  host.tabIndex = 0;
+  host.textContent = "hello ghbdtn";
+  show(host.textContent);
+  host.focus();
+  getSelection().collapse(host.firstChild, host.textContent.length);
+}
+
+// A page with no field at all: the focus stays on the document.
+function page() {
+  host.textContent = "hello ghbdtn";
+  show(host.textContent);
+}
+
+function readonly() {
+  const field = document.createElement("input");
+  host.replaceWith(field);
+  field.id = "editor";
+  field.readOnly = true;
+  field.value = "hello ghbdtn";
+  show(field.value);
+  field.focus();
+}
+
+function password() {
+  const field = document.createElement("input");
+  host.replaceWith(field);
+  field.id = "editor";
+  field.type = "password";
+  field.value = "hello ghbdtn";
+  show(field.value);
+  field.addEventListener("input", () => show(field.value));
+  field.focus();
+}
+
+const editors = {prosemirror, codemirror, lexical, quill, editable, controlled, fixed, page, readonly, password,
+  textarea: () => plain("textarea"), input: () => plain("input")};
+await editors[kind]();
+if (!["fixed", "page", "readonly", "password"].includes(kind)) show("");
+
+// ?load=N keeps the main thread busy in bursts of about N ms, as a heavy
+// application does: an editor then learns of a new selection late.
+const load = Number(params.get("load")) || 0;
+if (load) {
+  setInterval(() => {
+    const end = performance.now() + load * (0.5 + Math.random());
+    while (performance.now() < end);
+  }, load);
+}
+</script>
+</body>
+</html>

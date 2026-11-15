@@ -17,33 +17,36 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zakonnic/kbswitcher/internal/keymap"
 	"github.com/zakonnic/kbswitcher/internal/platform/clip"
 	"github.com/zakonnic/kbswitcher/internal/platform/console"
+	"github.com/zakonnic/kbswitcher/internal/platform/field"
 	"github.com/zakonnic/kbswitcher/internal/platform/input"
 	"github.com/zakonnic/kbswitcher/internal/platform/layouts"
 	"github.com/zakonnic/kbswitcher/internal/switcher"
 )
 
 type options struct {
-	host, shell, word, layout, want, mode, kb, pre, vsdir, focus string
-	tabs, n, left, presses, load, pid                            int
-	click, ide, file, ctrl                                       string
-	gap                                                          time.Duration
-	selection, keep, verbose, paste                              bool
+	host, shell, word, layout, want, mode, kb, pre, vsdir, focus, editor, cmd string
+	tabs, n, left, presses, load, pid                                         int
+	click, ide, file, ctrl                                                    string
+	gap                                                                       time.Duration
+	selection, keep, verbose, paste, noField, nowait                          bool
 }
 
 func main() {
 	var o options
-	flag.StringVar(&o.host, "host", "conhost", "conhost, wt, vscode, notepad, browser, attach or ide")
+	flag.StringVar(&o.host, "host", "conhost", "conhost, wt, vscode, notepad, native, browser, attach or ide")
 	flag.StringVar(&o.shell, "shell", "powershell.exe", "shell command line")
 	flag.StringVar(&o.word, "word", "ghbdtn", "keys to press, named as on a US keyboard")
 	flag.StringVar(&o.layout, "layout", "00000409", "layout the word is typed in")
 	flag.StringVar(&o.want, "want", "", "expected end of the line after converting; computed when empty")
-	flag.StringVar(&o.mode, "mode", "inproc", "inproc, hotkey or none")
+	flag.StringVar(&o.mode, "mode", "inproc", "inproc, hotkey, read (report the UIA view) or none")
 	flag.StringVar(&o.kb, "kb", "", "kbswitcher.exe to run in hotkey mode")
 	flag.StringVar(&o.pre, "pre", "", "a command to run in the shell before the first word")
 	flag.StringVar(&o.vsdir, "vsdir", filepath.Join(os.TempDir(), "kbswitcher-stand", "vscode"), "VS Code user data for the stand")
@@ -55,6 +58,8 @@ func main() {
 	flag.IntVar(&o.left, "left", 0, "press Left this many times before converting, to put the caret inside the text")
 	flag.IntVar(&o.presses, "presses", 1, "how many times to convert in a row; twice gives the text back")
 	flag.DurationVar(&o.gap, "gap", 400*time.Millisecond, "pause between the presses of -presses")
+	flag.StringVar(&o.cmd, "cmd", "", "titled: the command that opens a window titled field:<text>")
+	flag.StringVar(&o.editor, "editor", "prosemirror", "browser: prosemirror, codemirror, lexical, quill, editable, controlled, fixed, page, readonly, textarea or input; native: edit or rich")
 	flag.IntVar(&o.load, "load", 0, "browser: keep the page's main thread busy in bursts of about this many milliseconds")
 	flag.BoolVar(&o.paste, "paste", false, "paste the text from the clipboard instead of typing it")
 	flag.IntVar(&o.pid, "pid", 0, "attach: the shell already running in some terminal; ide: a terminal that must not change")
@@ -64,7 +69,13 @@ func main() {
 	flag.StringVar(&o.ctrl, "ctrl", "", "press Ctrl with this letter before converting, to see what the host makes of it")
 	flag.BoolVar(&o.keep, "keep", false, "leave the host open")
 	flag.BoolVar(&o.verbose, "v", false, "log the switcher in detail (inproc)")
+	flag.BoolVar(&o.nowait, "nowait", false, "convert right after typing, before the host shows the word")
+	flag.BoolVar(&o.noField, "nofield", false, "inproc: leave text fields to the clipboard path, as before UI Automation")
 	flag.Parse()
+	if o.host == "native-serve" {
+		serveNative(o.editor)
+		return
+	}
 
 	_, _, _ = procFreeConsole.Call()
 
@@ -104,8 +115,12 @@ func main() {
 			bystander = &shellHost{shell: uint32(o.pid)}
 		}
 		h = openInIDE(o.ide, o.file, o.click)
+	case "native":
+		h = launchNative(o.editor)
+	case "titled":
+		h = launchTitled(o.cmd)
 	case "browser":
-		h = launchBrowser(filepath.Join(filepath.Dir(o.vsdir), "edge"), o.load)
+		h = launchBrowser(filepath.Join(filepath.Dir(o.vsdir), "edge"), o.editor, o.load)
 	default:
 		fatal("unknown host %q", o.host)
 	}
@@ -147,6 +162,17 @@ func main() {
 		for attempt := range 2 {
 			time.Sleep(200 * time.Millisecond) // the layout switch of the last conversion lands late in conhost
 			h.clear()
+			// The old text must be gone first; a busy editor can drop a
+			// select-all. A shell's line is cleared through its console.
+			for retry := 0; !awaitLine(h, "") && retry < 3; retry++ {
+				if e, ok := h.(*editorHost); ok && e.wipe == nil {
+					chord('A', vkControl)
+					time.Sleep(300 * time.Millisecond) // let the editor take the selection in
+					chord(vkDelete)
+				} else {
+					h.clear()
+				}
+			}
 			activate(reader, o.layout)
 			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 			switch sh, isShell := h.(*shellHost); {
@@ -165,7 +191,7 @@ func main() {
 			default:
 				typeKeys(o.word)
 			}
-			if awaitSuffix(h, typed) {
+			if o.nowait || awaitSuffix(h, typed) {
 				break
 			}
 			fmt.Printf("#%d the word did not arrive\n", i+1)
@@ -179,8 +205,11 @@ func main() {
 		if o.ctrl != "" {
 			chord(uint16(o.ctrl[0]), vkControl) // see what the host makes of a shortcut
 		}
-		time.Sleep(150 * time.Millisecond)
-		before, _ := h.line()
+		before := ""
+		if !o.nowait {
+			time.Sleep(150 * time.Millisecond)
+			before, _ = h.line()
+		}
 		start := time.Now()
 		after, settled := before, time.Duration(0)
 		for press := range o.presses {
@@ -289,6 +318,9 @@ func converter(o options, installed []*keymap.Layout, reader *layouts.Reader) fu
 		clipboard, err := clip.Open()
 		check(err, "clip.Open")
 		deps := switcher.Deps{Layouts: reader, Keyboard: keyboard, Clipboard: clipboard, Terminal: terminal{keyboard}}
+		if !o.noField {
+			deps.Field = textField{keyboard}
+		}
 		s, err := switcher.New(installed, deps, switcher.DefaultOptions(), log)
 		check(err, "switcher.New")
 		return func() {
@@ -323,6 +355,41 @@ func converter(o options, installed []*keymap.Layout, reader *layouts.Reader) fu
 				sendKey(vkShift, 0x2A, true)
 			}
 		}
+	case "burst":
+		// Only the keys of a retype, with no reading: erase the word just
+		// typed and type its conversion, in one burst or paced.
+		keyboard, err := input.Open()
+		check(err, "input.Open")
+		return func() {
+			typed := keymap.Convert(o.word, find(installed, "00000409"), find(installed, o.layout))
+			_, word, _ := keymap.SplitLastWord(typed)
+			i := slices.Index(installed, find(installed, o.layout))
+			converted := keymap.Convert(word, installed[i], installed[(i+1)%len(installed)])
+			switch os.Getenv("BURST") {
+			case "bs": // the stand's own Backspace, with its scan code, one at a time
+				for range []rune(word) {
+					sendKey(0x08, 0x0E, false)
+					sendKey(0x08, 0x0E, true)
+				}
+				check(keyboard.Retype(false, 0, converted), "Retype")
+			case "split": // the Backspaces, a pause, the characters
+				check(keyboard.Retype(false, len([]rune(word)), ""), "Retype")
+				time.Sleep(100 * time.Millisecond)
+				check(keyboard.Retype(false, 0, converted), "Retype")
+			case "erase": // the Backspaces only
+				check(keyboard.Retype(false, len([]rune(word)), ""), "Retype")
+			default:
+				check(keyboard.Retype(false, len([]rune(word)), converted), "Retype")
+			}
+		}
+	case "read":
+		// Only report what UI Automation makes of the focused field.
+		return func() {
+			cmd := exec.Command(filepath.Join(filepath.Dir(os.Args[0]), "uiaread.exe"))
+			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x08000000} // CREATE_NO_WINDOW keeps the focus
+			out, err := cmd.Output()
+			fmt.Println("   uia:", strings.TrimSpace(string(out)), err)
+		}
 	default:
 		return func() {}
 	}
@@ -330,6 +397,11 @@ func converter(o options, installed []*keymap.Layout, reader *layouts.Reader) fu
 
 // stopKB ends the kbswitcher.exe the hotkey mode started.
 var stopKB = func() {}
+
+// textField is the app's text field reader, as internal/app builds it.
+type textField struct{ *input.Keyboard }
+
+func (textField) Read(around int) (field.Around, error) { return field.Read(around, around) }
 
 type terminal struct{ keyboard *input.Keyboard }
 
@@ -369,6 +441,18 @@ func awaitChange(h host, from string) bool {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	return false
+}
+
+func awaitLine(h host, want string) bool {
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if line, err := h.line(); err == nil && line == want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fmt.Println("the line did not become", strconv.Quote(want))
 	return false
 }
 

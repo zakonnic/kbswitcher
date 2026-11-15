@@ -130,9 +130,9 @@ func (k *Keyboard) SelectToLineStart() error {
 	return k.send([]C.KeyCode{k.shift}, k.home, 1)
 }
 
-// SelectCharsLeft presses Shift+Left n times.
-func (k *Keyboard) SelectCharsLeft(n int) error {
-	return k.send([]C.KeyCode{k.shift}, k.left, n)
+// SelectRight presses Shift+Right n times.
+func (k *Keyboard) SelectRight(n int) error {
+	return k.send([]C.KeyCode{k.shift}, k.right, n)
 }
 
 // CollapseSelectionRight presses Right.

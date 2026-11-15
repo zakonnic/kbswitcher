@@ -1,6 +1,10 @@
 package console
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/zakonnic/kbswitcher/internal/platform/uia"
+)
 
 func TestSplitRows(t *testing.T) {
 	got := splitRows("Windows PowerShell   \r\nPS C:\\> ghbdtn   \r\n")
@@ -36,8 +40,8 @@ func TestOnCaret(t *testing.T) {
 	// Measured in VS Code: a 98x15 terminal, the caret on cell (15, 1).
 	f := focus{
 		class:  xtermTextArea,
-		caret:  rect{left: 1511, top: 1416, right: 1524, bottom: 1446},
-		screen: rect{left: 1303, top: 1386, right: 2630, bottom: 1836},
+		caret:  uia.Rect{Left: 1511, Top: 1416, Right: 1524, Bottom: 1446},
+		screen: uia.Rect{Left: 1303, Top: 1386, Right: 2630, Bottom: 1836},
 	}
 	tests := []struct {
 		name string

@@ -3,6 +3,7 @@ package input
 import (
 	"fmt"
 	"slices"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -17,6 +18,7 @@ var (
 // Virtual key codes name physical keys and do not change with the layout, so
 // Ctrl+C stays Ctrl+C in a Cyrillic layout.
 const (
+	vkBack     = 0x08
 	vkShift    = 0x10
 	vkControl  = 0x11
 	vkAlt      = 0x12
@@ -41,6 +43,7 @@ const (
 	inputKeyboard     = 1
 	keyeventfExtended = 0x0001
 	keyeventfKeyUp    = 0x0002
+	keyeventfUnicode  = 0x0004
 )
 
 // modifier is one side of a modifier key. Windows tracks the two sides
@@ -107,13 +110,12 @@ func (k *Keyboard) SelectToLineStart() error {
 	return k.send(withModifiers([]uint16{vkShift}, repeat(vkHome, 1, keyeventfExtended)))
 }
 
-// SelectCharsLeft presses Shift+Left n times.
-func (k *Keyboard) SelectCharsLeft(n int) error {
-	return k.send(withModifiers([]uint16{vkShift}, repeat(vkLeft, n, keyeventfExtended)))
+// SelectRight presses Shift+Right n times.
+func (k *Keyboard) SelectRight(n int) error {
+	return k.send(withModifiers([]uint16{vkShift}, repeat(vkRight, n, keyeventfExtended)))
 }
 
-// CollapseSelectionRight presses Right, which leaves the caret at the end of
-// the selection.
+// CollapseSelectionRight presses Right.
 func (k *Keyboard) CollapseSelectionRight() error {
 	return k.send(withModifiers(nil, repeat(vkRight, 1, keyeventfExtended)))
 }
@@ -125,6 +127,28 @@ func (k *Keyboard) Nudge(back bool) error {
 		key = vkRight
 	}
 	return k.send(withModifiers(nil, repeat(key, 1, keyeventfExtended)))
+}
+
+// Mark presses Shift+Left.
+func (k *Keyboard) Mark() error {
+	return k.send(withModifiers([]uint16{vkShift}, repeat(vkLeft, 1, keyeventfExtended)))
+}
+
+// Retype presses Right when right is set, then Backspace erase times, and
+// types text, all in one burst. The characters go as Unicode, whatever the
+// layout, so text needs no keys of its own; it holds no control characters.
+func (k *Keyboard) Retype(right bool, erase int, text string) error {
+	var events []keyboardInput
+	if right {
+		events = append(events, repeat(vkRight, 1, keyeventfExtended)...)
+	}
+	events = append(events, repeat(vkBack, erase, 0)...)
+	for _, unit := range utf16.Encode([]rune(text)) {
+		events = append(events,
+			keyboardInput{typ: inputKeyboard, scan: unit, flags: keyeventfUnicode},
+			keyboardInput{typ: inputKeyboard, scan: unit, flags: keyeventfUnicode | keyeventfKeyUp})
+	}
+	return k.send(withModifiers(nil, events))
 }
 
 // Copy presses Ctrl+C, or with gentle set Ctrl+Insert, which copies as well

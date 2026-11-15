@@ -59,9 +59,9 @@ func (k *Keyboard) SelectToLineStart() error {
 	return k.send(keyLeft, flagCommand|flagShift, 1)
 }
 
-// SelectCharsLeft presses Shift+Left n times.
-func (k *Keyboard) SelectCharsLeft(n int) error {
-	return k.send(keyLeft, flagShift, n)
+// SelectRight presses Shift+Right n times.
+func (k *Keyboard) SelectRight(n int) error {
+	return k.send(keyRight, flagShift, n)
 }
 
 // CollapseSelectionRight presses Right.

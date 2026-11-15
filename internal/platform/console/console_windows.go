@@ -170,36 +170,7 @@ func pick(target window, consoles []found, probe Probe, selection bool) (found, 
 		return console, err
 	}
 	if target.kind == Chromium {
-		// The console is ahead of the terminal that renders it, so a caret
-		// that does not match yet is given a moment to catch up.
-		deadline := time.Now().Add(xtermLag)
-		for {
-			f, err := focused(target.pid, false)
-			if err != nil {
-				return found{}, fmt.Errorf("cannot tell whether a terminal has the focus: %w", err)
-			}
-			if !f.xterm() {
-				return found{}, fmt.Errorf("%w: the focus is on %q", ErrNotConsole, f.class)
-			}
-			console, err := byCaret(f, consoles)
-			if err == nil {
-				return console, nil
-			}
-			if !time.Now().Before(deadline) {
-				if selection {
-					return found{}, err
-				}
-				// Terminals of the same size with their carets on the same
-				// cell: the one that has the focus answers a key. The focus
-				// is on a terminal, so no answer is no reason for the
-				// clipboard path.
-				if console, probed := byProbe(consoles, probe); probed == nil {
-					return console, nil
-				}
-				return found{}, err
-			}
-			time.Sleep(xtermLagPoll)
-		}
+		return byFocus(target, consoles, probe, selection)
 	}
 	if len(consoles) == 1 {
 		return consoles[0], nil
@@ -226,6 +197,53 @@ func pick(target window, consoles []found, probe Probe, selection bool) (found, 
 			ErrAmbiguous, len(consoles), err, len(matching))
 	}
 	return matching[0], nil
+}
+
+// byFocus picks the console of the terminal pane that has the focus in a
+// Chromium window. An xterm.js terminal names its text area, and the caret
+// it sits on tells the console. A text area at the caret that names nothing
+// (Tabby exposes no class at all) belongs to a terminal or to an editor that
+// draws its own text; a shell answers a caret key, and with none answering
+// the pane is still left alone, since an editor would name itself.
+func byFocus(target window, consoles []found, probe Probe, selection bool) (found, error) {
+	// The console is ahead of the terminal that renders it, so a caret that
+	// does not match yet is given a moment to catch up.
+	deadline := time.Now().Add(xtermLag)
+	for {
+		f, err := focused(target.pid, false)
+		if err != nil {
+			return found{}, fmt.Errorf("cannot tell whether a terminal has the focus: %w", err)
+		}
+		switch {
+		case f.hidden && f.class == "":
+			// A selection a terminal shows is its own, so probing loses
+			// nothing a shell could convert but a PSReadLine selection.
+			console, err := byProbe(consoles, probe)
+			if errors.Is(err, errNoAnswer) {
+				return found{}, fmt.Errorf("the focused pane names nothing about itself: %w", err)
+			}
+			return console, err
+		case !f.xterm():
+			return found{}, fmt.Errorf("%w: the focus is on %q", ErrNotConsole, f.class)
+		}
+		console, err := byCaret(f, consoles)
+		if err == nil {
+			return console, nil
+		}
+		if !time.Now().Before(deadline) {
+			if selection {
+				return found{}, err
+			}
+			// Terminals of the same size with their carets on the same cell:
+			// the one that has the focus answers a key. The focus is on a
+			// terminal, so no answer is no reason for the clipboard path.
+			if console, probed := byProbe(consoles, probe); probed == nil {
+				return console, nil
+			}
+			return found{}, err
+		}
+		time.Sleep(xtermLagPoll)
+	}
 }
 
 // byRows picks the console whose caret row, and the rows above it, are what
@@ -268,13 +286,13 @@ func onCaret(f focus, v view) bool {
 	if v.cols <= 0 || v.lines <= 0 {
 		return false
 	}
-	cellW := f.screen.width() / float64(v.cols)
-	cellH := f.screen.height() / float64(v.lines)
-	x := float64(f.caret.left - f.screen.left)
-	y := float64(f.caret.top - f.screen.top)
+	cellW := f.screen.Width() / float64(v.cols)
+	cellH := f.screen.Height() / float64(v.lines)
+	x := float64(f.caret.Left - f.screen.Left)
+	y := float64(f.caret.Top - f.screen.Top)
 	return math.Abs(x-float64(v.caretX)*cellW) <= cellW/2 &&
 		math.Abs(y-float64(v.caretY)*cellH) <= cellH/2 &&
-		math.Abs(f.caret.height()-cellH) <= cellH/4
+		math.Abs(f.caret.Height()-cellH) <= cellH/4
 }
 
 // sameRows reports whether two row lists end in the same text. Whitespace is

@@ -262,6 +262,8 @@ type editorHost struct {
 	hwnd    uintptr
 	read    func() (string, error)
 	cleanup func()
+	// wipe empties the field where Ctrl+A does not select all.
+	wipe func()
 }
 
 func (h *editorHost) window() uintptr { return h.hwnd }
@@ -276,6 +278,10 @@ func (h *editorHost) line() (string, error) {
 }
 
 func (h *editorHost) clear() {
+	if h.wipe != nil {
+		h.wipe()
+		return
+	}
 	chord('A', vkControl)
 	chord(vkDelete)
 }
@@ -304,13 +310,13 @@ func (v *vscode) editor() *editorHost {
 
 const edgeExe = `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
 
-// launchBrowser opens prosemirror.html, next to this file, in an Edge app
-// window with a profile of its own. ProseMirror stands for the script-driven
-// editors (Claude, ChatGPT) whose selection lags the browser's; the page
-// mirrors the editor's text into the window title.
-func launchBrowser(profile string, load int) *editorHost {
+// launchBrowser opens editors.html, next to this file, in an Edge app window
+// with a profile of its own. ProseMirror stands for the script-driven editors
+// (Claude, ChatGPT) whose selection lags the browser's; the page mirrors the
+// editor's text into the window title.
+func launchBrowser(profile, editor string, load int) *editorHost {
 	_, self, _, _ := runtime.Caller(0)
-	page := fmt.Sprintf("file:///%s?load=%d", filepath.ToSlash(filepath.Join(filepath.Dir(self), "prosemirror.html")), load)
+	page := fmt.Sprintf("file:///%s?editor=%s&load=%d", filepath.ToSlash(filepath.Join(filepath.Dir(self), "editors.html")), editor, load)
 	check(os.MkdirAll(profile, 0o700), "edge profile")
 	before := topLevel("Chrome_WidgetWin_1", 0)
 	createProcess(fmt.Sprintf(`"%s" --user-data-dir="%s" --no-first-run --no-default-browser-check --app=%s`, edgeExe, profile, page), 0)
@@ -319,13 +325,13 @@ func launchBrowser(profile string, load int) *editorHost {
 	for hwnd == 0 && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 		for h := range topLevel("Chrome_WidgetWin_1", 0) {
-			if !before[h] && windowText(h) == "stand:" {
+			if !before[h] && strings.HasPrefix(windowText(h), "stand:") {
 				hwnd = h
 			}
 		}
 	}
 	if hwnd == 0 {
-		fatal("the ProseMirror page did not load")
+		fatal("the %s page did not load", editor)
 	}
 	return &editorHost{hwnd: hwnd,
 		read: func() (string, error) {

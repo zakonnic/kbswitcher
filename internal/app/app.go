@@ -221,6 +221,7 @@ func (a *App) buildSwitcher() error {
 		Keyboard:  a.keyboard,
 		Clipboard: a.clipboard,
 		Terminal:  terminal{a.keyboard},
+		Field:     newField(a.keyboard),
 	}
 	a.switcher, err = switcher.New(installed, deps, switcher.DefaultOptions(), a.log)
 	if err != nil {
