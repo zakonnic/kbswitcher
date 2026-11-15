@@ -9,7 +9,7 @@ import "embed"
 var IconPNG []byte
 
 // Tray holds the notification-area icon drawn for each size in pixels, as
-// tray/<size>.png; tools/trayicon draws them.
+// tray/<size>.png; tools/icons draws them.
 //
 //go:embed tray
 var Tray embed.FS

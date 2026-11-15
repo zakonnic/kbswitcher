@@ -1,13 +1,17 @@
-// Command trayicon draws the notification-area icons into internal/assets/tray.
+// Command icons draws the notification-area icons into internal/assets/tray
+// and builds internal/assets/icon.ico from them and from icon.png.
 //
 // The application icon is too detailed to survive the tray's 16-48 pixels, so
 // the tray gets the same tile redrawn per size: fewer, thicker parts whose
-// edges sit on whole pixels.
+// edges sit on whole pixels. The .ico takes those drawings for its small
+// sizes and icon.png scaled down for the large ones.
 //
-//	go run ./tools/trayicon
+//	go run ./tools/icons
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"image"
@@ -19,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/vector"
 )
 
@@ -52,8 +57,13 @@ var layouts = []layout{
 var (
 	fillTop    = rgb(0x1E, 0x23, 0x33)
 	fillBottom = rgb(0x12, 0x12, 0x1C)
-	// rim corners: top left, top right, bottom left, bottom right
-	rim       = [4]color.NRGBA{rgb(0x8C, 0x9C, 0xC8), rgb(0x2E, 0x8A, 0xF5), rgb(0x8A, 0x2B, 0xE2), rgb(0x4A, 0x4A, 0xE0)}
+	// The rim is dark and lit at the top right and bottom left corners: a wide
+	// glow and a bright tip at each, by angle from the center, y down.
+	rimDark  = rgb(0x04, 0x05, 0x09)
+	rimGlows = []rimGlow{
+		{-45, 40, 1, rgb(0x2A, 0x8C, 0xFF)}, {-45, 14, 0.8, rgb(0x4B, 0xD6, 0xFE)},
+		{135, 40, 1, rgb(0xA8, 0x38, 0xFA)}, {135, 14, 0.8, rgb(0xC7, 0x48, 0xFB)},
+	}
 	rightFrom = rgb(0x26, 0x86, 0xFB)
 	rightTo   = rgb(0x10, 0xCC, 0xFC)
 	leftFrom  = rgb(0xEA, 0x5E, 0xFD)
@@ -61,30 +71,88 @@ var (
 	keyColor  = rgb(0xDC, 0xE0, 0xEA)
 )
 
+// The .ico sizes drawn for the tray and those scaled from icon.png.
+var (
+	icoDrawn  = []int{16, 20, 24, 32, 40}
+	icoScaled = []int{48, 64, 128, 256}
+)
+
 func main() {
-	out := flag.String("out", filepath.Join("internal", "assets", "tray"), "output directory")
+	assets := flag.String("assets", filepath.Join("internal", "assets"), "assets directory")
 	flag.Parse()
-	if err := os.MkdirAll(*out, 0o755); err != nil {
+	if err := run(*assets); err != nil {
 		log.Fatal(err)
-	}
-	for _, l := range layouts {
-		name := filepath.Join(*out, fmt.Sprintf("%d.png", l.size))
-		if err := write(name, l.draw()); err != nil {
-			log.Fatal(err)
-		}
 	}
 }
 
-func write(name string, img image.Image) error {
-	f, err := os.Create(name)
+func run(assets string) error {
+	tray := filepath.Join(assets, "tray")
+	if err := os.MkdirAll(tray, 0o755); err != nil {
+		return err
+	}
+	drawn := map[int]image.Image{}
+	for _, l := range layouts {
+		img := l.draw()
+		drawn[l.size] = img
+		if err := write(filepath.Join(tray, fmt.Sprintf("%d.png", l.size)), img); err != nil {
+			return err
+		}
+	}
+
+	art, err := read(filepath.Join(assets, "icon.png"))
 	if err != nil {
 		return err
 	}
-	if err := png.Encode(f, img); err != nil {
-		f.Close()
+	var entries []image.Image
+	for _, size := range icoDrawn {
+		entries = append(entries, drawn[size])
+	}
+	for _, size := range icoScaled {
+		img := image.NewNRGBA(image.Rect(0, 0, size, size))
+		xdraw.CatmullRom.Scale(img, img.Bounds(), art, art.Bounds(), xdraw.Src, nil)
+		entries = append(entries, img)
+	}
+	return writeICO(filepath.Join(assets, "icon.ico"), entries)
+}
+
+func read(name string) (image.Image, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return png.Decode(f)
+}
+
+func write(name string, img image.Image) error {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
 		return err
 	}
-	return f.Close()
+	return os.WriteFile(name, buf.Bytes(), 0o644)
+}
+
+// writeICO stores every image PNG-encoded: Windows reads that at any size
+// since Vista, and it needs no separate transparency mask.
+func writeICO(name string, images []image.Image) error {
+	type entry struct {
+		Width, Height, Colors, Reserved uint8
+		Planes, Bits                    uint16
+		Size, Offset                    uint32
+	}
+	var head, body bytes.Buffer
+	_ = binary.Write(&head, binary.LittleEndian, [3]uint16{0, 1, uint16(len(images))})
+	offset := 6 + 16*len(images)
+	for _, img := range images {
+		start := body.Len()
+		if err := png.Encode(&body, img); err != nil {
+			return err
+		}
+		side := uint8(img.Bounds().Dx() % 256) // 256 is written as 0
+		size := body.Len() - start
+		_ = binary.Write(&head, binary.LittleEndian, entry{side, side, 0, 0, 1, 32, uint32(size), uint32(offset + start)})
+	}
+	return os.WriteFile(name, append(head.Bytes(), body.Bytes()...), 0o644)
 }
 
 func (l layout) draw() *image.NRGBA {
@@ -93,7 +161,7 @@ func (l layout) draw() *image.NRGBA {
 	radius := s * 0.24
 	b := float32(l.border)
 
-	paint(dst, corners(l.size), roundRect(l.size, 0, 0, s, s, radius))
+	paint(dst, rim(l.size), roundRect(l.size, 0, 0, s, s, radius))
 	paint(dst, vertical(fillTop, fillBottom, l.size), roundRect(l.size, b, b, s-b, s-b, radius-b))
 
 	// Content: the keyboard sets the width, the stack of parts the height.
@@ -206,10 +274,22 @@ func vertical(from, to color.NRGBA, size int) gradient {
 	return func(_, y float32) color.NRGBA { return mix(from, to, y/float32(size)) }
 }
 
-func corners(size int) gradient {
+type rimGlow struct {
+	angle, spread float64 // degrees
+	strength      float32
+	color         color.NRGBA
+}
+
+func rim(size int) gradient {
 	return func(x, y float32) color.NRGBA {
-		tx, ty := x/float32(size), y/float32(size)
-		return mix(mix(rim[0], rim[1], tx), mix(rim[2], rim[3], tx), ty)
+		c := float32(size) / 2
+		angle := math.Atan2(float64(y-c), float64(x-c)) * 180 / math.Pi
+		col := rimDark
+		for _, g := range rimGlows {
+			d := math.Mod(angle-g.angle+540, 360) - 180
+			col = mix(col, g.color, g.strength*float32(math.Exp(-d*d/(2*g.spread*g.spread))))
+		}
+		return col
 	}
 }
 
