@@ -39,6 +39,7 @@ var (
 const (
 	slotQueryInterface      = 0
 	slotRelease             = 2
+	slotElementFromHandle   = 6  // IUIAutomation
 	slotGetFocusedElement   = 8  // IUIAutomation
 	slotRawViewWalker       = 16 // IUIAutomation
 	slotGetParentElement    = 3  // IUIAutomationTreeWalker
@@ -178,6 +179,15 @@ func (c *Client) Focused() (*Element, error) {
 		e.Release()
 		time.Sleep(chromiumWarmUpPoll)
 	}
+}
+
+// Window returns the element of a window.
+func (c *Client) Window(hwnd uintptr) (*Element, error) {
+	obj, err := c.automation.get(slotElementFromHandle, hwnd)
+	if err != nil {
+		return nil, fmt.Errorf("window %#x has no element: %w", hwnd, err)
+	}
+	return &Element{obj: obj}, nil
 }
 
 // Parent returns the element above e in the raw view, or nil at the top.

@@ -63,9 +63,9 @@ const (
 
 // controlOf tells a system edit control by its class, and by its answer to
 // a message no other window answers so: it has at least one line.
-func controlOf(hwnd windows.HWND) (control, string) {
+func controlOf(hwnd windows.HWND) control {
 	if hwnd == 0 {
-		return other, ""
+		return other
 	}
 	class := windowClass(hwnd)
 	kind := other
@@ -76,21 +76,22 @@ func controlOf(hwnd windows.HWND) (control, string) {
 		kind = richEdit
 	}
 	if kind == other {
-		return other, class
+		return other
 	}
 	if lines, ok := send(hwnd, emGetLineCount, 0, 0, readTimeoutMillis); !ok || lresult(lines) < 1 {
-		return other, class
+		return other
 	}
-	return kind, class
+	return kind
 }
 
 // Read returns the selection of the focused text field and up to before and
 // after characters on either side of it. It fails with ErrNoText unless the
 // field is editable, shows its text itself and tells it, and with
 // ErrPassword for a field that hides it.
-func Read(before, after int) (Around, error) {
-	focus := focusedWindow()
-	switch kind, class := controlOf(focus); kind {
+func Read(before, after int) (Around, error) { return read(focusedWindow(), before, after) }
+
+func read(focus windows.HWND, before, after int) (Around, error) {
+	switch controlOf(focus) {
 	case edit:
 		return classic(focus, before, after)
 	case richEdit:
@@ -99,14 +100,14 @@ func Read(before, after int) (Around, error) {
 		if err := writable(focus); err != nil {
 			return Around{}, err
 		}
-		a, err := automated(before, after, class)
+		a, err := automated(before, after, focus)
 		if errors.Is(err, ErrNoText) {
 			return classic(focus, before, after)
 		}
 		a.Direct = err == nil
 		return a, err
 	}
-	return automated(before, after, "")
+	return automated(before, after, 0)
 }
 
 // Replace replaces erased, the text that ends at the caret, with text, in the
@@ -118,8 +119,11 @@ func Read(before, after int) (Around, error) {
 // The control takes keys in between the messages: keys the user presses
 // meanwhile can still land between the check and the replacement.
 func Replace(right bool, erased, text string) error {
-	focus := focusedWindow()
-	if kind, _ := controlOf(focus); kind == other {
+	return replace(focusedWindow(), right, erased, text)
+}
+
+func replace(focus windows.HWND, right bool, erased, text string) error {
+	if controlOf(focus) == other {
 		return fmt.Errorf("%w: the focus has left the edit control", ErrChanged)
 	}
 	start, end, ok := selection(focus)
@@ -180,19 +184,23 @@ func writable(hwnd windows.HWND) error {
 	return nil
 }
 
-// automated reads the focused element through UI Automation; with class
-// set, only one of that class.
-func automated(before, after int, class string) (Around, error) {
+// automated reads a field through UI Automation: the element of window, or
+// with none, the element that has the focus.
+func automated(before, after int, window windows.HWND) (Around, error) {
 	var a Around
 	err := uia.With(func(c *uia.Client) error {
-		e, err := c.Focused()
+		var e *uia.Element
+		var err error
+		if window != 0 {
+			e, err = c.Window(uintptr(window))
+		} else {
+			e, err = c.Focused()
+		}
 		if err != nil {
 			return err
 		}
 		defer e.Release()
 		switch {
-		case class != "" && e.Class() != class:
-			return fmt.Errorf("%w: UI Automation reports the focus on %q", ErrNoText, e.Class())
 		case e.Password():
 			return ErrPassword
 		case !e.Editable(), e.Hidden():

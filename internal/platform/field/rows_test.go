@@ -143,3 +143,36 @@ func TestASilentWindowEndsTheReading(t *testing.T) {
 		t.Errorf("readRows asked %d times", s.calls)
 	}
 }
+
+// broken answers some questions and not others.
+type broken struct {
+	*wrapped
+	noIndex, noRow int // the index asked about, or the row read, that fails
+}
+
+func (b broken) indexOf(position int) (int, bool) {
+	if position == b.noIndex {
+		return 0, false
+	}
+	return b.wrapped.indexOf(position)
+}
+
+func (b broken) rowAt(index int) (row, bool) {
+	if index == b.noRow {
+		return row{}, false
+	}
+	return b.wrapped.rowAt(index)
+}
+
+func TestReadRowsFailsWhereTheControlDoesNotAnswer(t *testing.T) {
+	const text = "the quick brown fox"
+	for name, src := range map[string]rowSource{
+		"the start":          broken{newWrapped(text, "\r\n", 5), 4, -1},
+		"the end":            broken{newWrapped(text, "\r\n", 5), 12, -1},
+		"a row between them": broken{newWrapped(text, "\r\n", 5), -1, 1},
+	} {
+		if _, ok := readRows(src, 4, 12, 300, 300); ok {
+			t.Errorf("%s does not answer, and the read went through", name)
+		}
+	}
+}

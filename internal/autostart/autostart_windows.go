@@ -12,8 +12,8 @@ import (
 )
 
 // runKeyPath is the per-user Run key; nothing is written under
-// HKEY_LOCAL_MACHINE.
-const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+// HKEY_LOCAL_MACHINE. Tests point it at a key of their own.
+var runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 
 // Enabled reports whether kbswitcher is registered to start with the session.
 func Enabled() (bool, error) {

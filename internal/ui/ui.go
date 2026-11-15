@@ -6,6 +6,7 @@
 package ui
 
 import (
+	"context"
 	"log/slog"
 
 	"fyne.io/fyne/v2"
@@ -20,11 +21,18 @@ import (
 	"github.com/zakonnic/kbswitcher/internal/updater"
 )
 
+// Updater finds and installs releases; *updater.Updater is one.
+type Updater interface {
+	Latest(ctx context.Context) (updater.Release, error)
+	IsNewer(release updater.Release) bool
+	Update(ctx context.Context, release updater.Release) (string, error)
+}
+
 // Options are what the application hands to the interface.
 type Options struct {
 	Log *slog.Logger
 	// Updater is nil when updates are unavailable.
-	Updater *updater.Updater
+	Updater Updater
 	// Layouts is the cycle read at start-up, shown in About.
 	Layouts []*keymap.Layout
 	Config  config.Config

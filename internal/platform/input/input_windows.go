@@ -227,12 +227,18 @@ func (k *Keyboard) send(events []keyboardInput) error {
 	if len(events) == 0 {
 		return nil
 	}
+	if sent, err := sendInput(events); sent != len(events) {
+		return fmt.Errorf("SendInput delivered %d of %d events: %w", sent, len(events), err)
+	}
+	return nil
+}
+
+// sendInput presses keys in whatever window has the focus; tests catch them
+// instead.
+var sendInput = func(events []keyboardInput) (int, error) {
 	sent, _, err := procSendInput.Call(
 		uintptr(len(events)),
 		uintptr(unsafe.Pointer(&events[0])),
 		unsafe.Sizeof(events[0]))
-	if int(sent) != len(events) {
-		return fmt.Errorf("SendInput delivered %d of %d events: %w", sent, len(events), err)
-	}
-	return nil
+	return int(sent), err
 }

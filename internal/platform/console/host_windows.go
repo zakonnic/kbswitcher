@@ -38,6 +38,9 @@ type window struct {
 	kind   Kind
 }
 
+// foregroundWindow is the window Open works for; tests name one of their own.
+var foregroundWindow = foreground
+
 func foreground() (window, error) {
 	handle, _, _ := procGetForegroundWindow.Call()
 	if handle == 0 {

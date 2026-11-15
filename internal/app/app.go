@@ -23,6 +23,13 @@ import (
 	"github.com/zakonnic/kbswitcher/internal/updater"
 )
 
+// The autostart entry, through variables that tests point elsewhere: the
+// real one lives in the user's registry or home.
+var (
+	autostartEnabled = autostart.Enabled
+	setAutostart     = autostart.Set
+)
+
 // conversionTimeout bounds one conversion: a few key presses and a clipboard
 // round trip. Anything slower means the focused application stopped answering.
 const conversionTimeout = 5 * time.Second
@@ -69,20 +76,21 @@ func New(log *slog.Logger) (*App, error) {
 		a.warn("The hotkey could not be bound: %v", err)
 	}
 
-	release, err := updater.New()
-	if err != nil {
-		a.warn("Updates are unavailable: %v", err)
+	options := ui.Options{
+		Log:     log,
+		Layouts: a.switcher.Layouts(),
+		Config:  a.config,
+		Apply:   a.Apply,
+		Suspend: a.suspendHotkeys,
 	}
-
-	a.ui = ui.New(ui.Options{
-		Log:      log,
-		Updater:  release,
-		Layouts:  a.switcher.Layouts(),
-		Config:   a.config,
-		Apply:    a.Apply,
-		Suspend:  a.suspendHotkeys,
-		Warnings: a.warnings,
-	})
+	// A nil *Updater in the interface would not read as nil.
+	if release, err := updater.New(); err != nil {
+		a.warn("Updates are unavailable: %v", err)
+	} else {
+		options.Updater = release
+	}
+	options.Warnings = a.warnings
+	a.ui = ui.New(options)
 	return a, nil
 }
 
@@ -122,14 +130,14 @@ func (a *App) Apply(cfg config.Config) error {
 		return err
 	}
 	if cfg.Autostart != a.config.Autostart {
-		if err := autostart.Set(cfg.Autostart); err != nil {
+		if err := setAutostart(cfg.Autostart); err != nil {
 			a.restoreHotkeys()
 			return err
 		}
 	}
 	if err := config.Save(cfg); err != nil {
 		a.restoreHotkeys()
-		if undoErr := autostart.Set(a.config.Autostart); undoErr != nil {
+		if undoErr := setAutostart(a.config.Autostart); undoErr != nil {
 			a.log.Error("could not restore the autostart entry", "error", undoErr)
 		}
 		return err
@@ -174,10 +182,10 @@ func (a *App) ensureAutostart() {
 	if !a.config.Autostart {
 		return
 	}
-	if enabled, err := autostart.Enabled(); err == nil && enabled {
+	if enabled, err := autostartEnabled(); err == nil && enabled {
 		return
 	}
-	if err := autostart.Enable(); err != nil {
+	if err := setAutostart(true); err != nil {
 		a.warn("Autostart is enabled in the settings but could not be registered: %v", err)
 	}
 }

@@ -140,6 +140,10 @@ func (r *Reader) Active() (string, error) {
 	return id, nil
 }
 
+// foregroundWindow is the window a layout switch is asked of; tests name one
+// of their own.
+var foregroundWindow = windows.GetForegroundWindow
+
 // Activate asks the focused window to switch to the given layout, as the
 // language bar does; Windows offers no way to set another process's layout
 // directly.
@@ -151,7 +155,7 @@ func (r *Reader) Activate(id string) error {
 		return fmt.Errorf("unknown layout %q", id)
 	}
 
-	hwnd := windows.GetForegroundWindow()
+	hwnd := foregroundWindow()
 	if hwnd == 0 {
 		return errors.New("no focused window to switch")
 	}

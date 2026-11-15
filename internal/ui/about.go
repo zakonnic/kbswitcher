@@ -257,16 +257,24 @@ func newUpdatePanel(app *App, window fyne.Window) *updatePanel {
 
 func (p *updatePanel) show(text string, style chipStyle) { p.status.set(text, style) }
 
+// background runs slow work off the main goroutine and the function it
+// returns back on it.
+var background = func(work func() func()) {
+	go func() {
+		done := work()
+		fyne.Do(done)
+	}()
+}
+
 // check asks for the latest release and offers to install it when it is newer.
 func (p *updatePanel) check() {
 	p.button.disable()
 	p.show("Checking…", pillNeutral)
 	u := p.app.options.Updater
 
-	go func() {
+	background(func() func() {
 		release, err := u.Latest(context.Background())
-
-		fyne.Do(func() {
+		return func() {
 			p.button.enable()
 			switch {
 			case err != nil:
@@ -279,8 +287,8 @@ func (p *updatePanel) check() {
 				p.show(release.Version+" available", pillNeutral)
 				p.confirm(release)
 			}
-		})
-	}()
+		}
+	})
 }
 
 func (p *updatePanel) confirm(release updater.Release) {
@@ -307,10 +315,9 @@ func (p *updatePanel) install(release updater.Release) {
 	p.show("Downloading…", pillNeutral)
 	u := p.app.options.Updater
 
-	go func() {
+	background(func() func() {
 		path, err := u.Update(context.Background(), release)
-
-		fyne.Do(func() {
+		return func() {
 			p.button.enable()
 			if err != nil {
 				p.app.log.Error("update failed", "version", release.Version, "error", err)
@@ -331,6 +338,6 @@ func (p *updatePanel) install(release updater.Release) {
 					p.app.restart = true
 					p.app.fyne.Quit()
 				}, p.window)
-		})
-	}()
+		}
+	})
 }

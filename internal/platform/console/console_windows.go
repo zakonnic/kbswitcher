@@ -94,7 +94,7 @@ type Session struct {
 // runs shells and does not say whether one of them has the focus; selection
 // says that a selection is being converted, which no probe leaves as it was.
 func Open(probe Probe, selection bool) (*Session, error) {
-	target, err := foreground()
+	target, err := foregroundWindow()
 	if err != nil {
 		return nil, err
 	}

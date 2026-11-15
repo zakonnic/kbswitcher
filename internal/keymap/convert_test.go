@@ -148,3 +148,14 @@ func TestLayoutAccessors(t *testing.T) {
 		t.Errorf("String() = %q", us.String())
 	}
 }
+
+func TestNames(t *testing.T) {
+	if KeyA.String() != keyNames[KeyA] || KeyCount.String() != "Key(invalid)" {
+		t.Error("Key.String")
+	}
+	for _, l := range Fallback() {
+		if l.ID() == "" || l.Name() == "" {
+			t.Errorf("a built-in layout without a name: %q %q", l.ID(), l.Name())
+		}
+	}
+}
