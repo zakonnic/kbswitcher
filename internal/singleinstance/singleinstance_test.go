@@ -6,6 +6,10 @@ import (
 )
 
 func TestLockIsExclusive(t *testing.T) {
+	// The real name would collide with a kbswitcher that is running.
+	defer func(name string) { lockName = name }(lockName)
+	lockName += ".test"
+
 	release, err := Lock()
 	if err != nil {
 		t.Fatalf("Lock: %v", err)

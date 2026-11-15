@@ -214,15 +214,22 @@ checks what the window shows. `go run ./tools/stand -help` lists its options.
 ### Releasing
 
 ```sh
-make release VERSION=1.2.3
+make release V=1.2.3          # asks before the push; YES=1 does not
+make release-verify V=1.2.3   # after publishing on GitHub
 ```
 
-On a clean `main`, this vets and tests, tags `v1.2.3` (refusing a version not newer than the last tag), packages the
-archive with `checksums.txt`, pushes `main` and the tag, and prints what is left to do on GitHub: publish a release
-from the tag with both files attached. The updater reads only the latest published release; drafts and pre-releases
-are invisible to it, and it refuses a release without `checksums.txt`. The build needs cgo, so each platform's archive
-is made on that platform with `make dist VERSION=v1.2.3` and added to the same release, its line appended to the same
-`checksums.txt`. `make tag`, `make untag` and `make push` are the steps on their own.
+On a clean `main`, `make release` checks formatting, vets, lints and runs the tests under the race detector, tags
+`v1.2.3` (refusing a version not newer than the last tag), packages the archive with `checksums.txt`, asks, and
+pushes `main` and the tag together. Anything that stops before the push deletes the tag again, so the same version
+can be cut once the cause is fixed; once origin has the tag, a fix needs the next version. It then prints what is left
+on GitHub: publish a release from the tag with both files attached. The updater reads only the latest published
+release; drafts and pre-releases are invisible to it, and it refuses a release without `checksums.txt`.
+`make release-verify` checks that GitHub serves the new release as the latest, with the archive and a `checksums.txt`
+that vouches for the archive built here.
+
+The build needs cgo, so each platform's archive is made on that platform with `make dist VERSION=v1.2.3` and added to
+the same release, its line appended to the same `checksums.txt`. `make release-check`, `make tag`, `make untag` and
+`make push` are the steps on their own.
 
 ## Security
 

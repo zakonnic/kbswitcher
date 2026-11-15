@@ -13,6 +13,10 @@ import (
 	"github.com/zakonnic/kbswitcher/internal/buildinfo"
 )
 
+// lockName names the lock file. A test takes a name of its own, so that it
+// can run while kbswitcher does.
+var lockName = buildinfo.Name
+
 // Lock takes an advisory lock on a file in the user cache directory. The kernel
 // drops the lock when the process ends, so a crash cannot leave it behind. The
 // returned function releases it and may be called more than once.
@@ -26,7 +30,7 @@ func Lock() (release func(), err error) {
 		return noop, err
 	}
 
-	path := filepath.Join(dir, buildinfo.Name+".lock")
+	path := filepath.Join(dir, lockName+".lock")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // constant path under the user cache directory
 	if err != nil {
 		return noop, err
