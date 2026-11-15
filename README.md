@@ -1,6 +1,7 @@
 # kbswitcher
 
 [![Release](https://img.shields.io/github/v/release/zakonnic/kbswitcher?sort=semver)](https://github.com/zakonnic/kbswitcher/releases)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zakonnic/kbswitcher/badges/coverage.json)](https://github.com/zakonnic/kbswitcher/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/github/go-mod/go-version/zakonnic/kbswitcher)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)](#installation)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -213,6 +214,7 @@ field that exercises select-copy-convert-paste end to end.
 ```sh
 make check          # format, vet and test
 make test-race      # tests under the race detector
+make cover-gen      # coverage of the application's code, the number of the badge above
 make lint           # golangci-lint, settings in .golangci.yml
 make dist           # package bin/ and append to bin/checksums.txt, as a release expects
 ```

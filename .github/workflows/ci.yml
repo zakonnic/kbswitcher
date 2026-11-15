@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Most of the code that talks to the system (text fields, consoles, hotkeys,
+  # the clipboard) is built for Windows only, so the tests and the coverage run
+  # there; the GUI toolkit needs cgo, and the runner's MinGW gcc provides it.
+  # The README badge: shields.io renders coverage.json from the badges branch, a
+  # single commit this job replaces on every push to main; a pull request only
+  # gets the number in its job summary.
+  test:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - run: go vet ./...
+      - name: go test with coverage
+        id: cover
+        # As make cover-gen; the runner has no make. tools/ is test equipment
+        # and stays out of the number.
+        run: |
+          mkdir -p var
+          go test -count=1 -coverpkg=./cmd/...,./internal/... -coverprofile=var/coverage.out ./...
+          pct=$(go tool cover -func=var/coverage.out | awk '/^total:/ {sub(/%/, "", $NF); print $NF}')
+          echo "pct=$pct" >> "$GITHUB_OUTPUT"
+          echo "Coverage: $pct%" >> "$GITHUB_STEP_SUMMARY"
+        timeout-minutes: 20
+      - name: publish the badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          PCT: ${{ steps.cover.outputs.pct }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          color=$(awk -v p="$PCT" 'BEGIN {
+            print (p >= 90 ? "brightgreen" : p >= 80 ? "green" : p >= 70 ? "yellowgreen" : p >= 60 ? "yellow" : "red") }')
+          dir=$(mktemp -d)
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$PCT" "$color" \
+            > "$dir/coverage.json"
+          cd "$dir"
+          git init -q -b badges
+          git add coverage.json
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -qm "coverage $PCT%"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

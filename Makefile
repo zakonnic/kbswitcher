@@ -75,6 +75,13 @@ test-race: ## Run the tests under the race detector
 cover: ## Run the tests and report coverage per package
 	go test -cover ./...
 
+# tools/ is test equipment: it stays out of the number, as in CI.
+.PHONY: cover-gen
+cover-gen: ## Measure the coverage of the application's code into var/coverage.out, the number the README badge shows
+	@mkdir -p var
+	go test -count=1 -coverpkg=./cmd/...,./internal/... -coverprofile=var/coverage.out ./...
+	go tool cover -func=var/coverage.out | tail -1
+
 .PHONY: vet
 vet: ## Run go vet
 	go vet ./...
