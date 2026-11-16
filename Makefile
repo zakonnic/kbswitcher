@@ -1,3 +1,8 @@
+# Make on Windows runs recipes with the first sh.exe on PATH. Cygwin's sets
+# HOME to its own home when none is set, as from PowerShell, and git then
+# misses ~/.gitconfig: no identity for the tag, no credentials for the push.
+export HOME := $(or $(HOME),$(USERPROFILE))
+
 MODULE  := github.com/zakonnic/kbswitcher
 BINDIR  := bin
 GOOS    ?= $(shell go env GOOS)
