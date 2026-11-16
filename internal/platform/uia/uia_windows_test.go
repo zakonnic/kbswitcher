@@ -36,6 +36,15 @@ const (
 	offScreen = -32000
 )
 
+// TestMain ends the process without running its DLLs' detach code: on the CI
+// runner, with windows of this process behind UI Automation, a DLL crashed in
+// it after every test had passed, and the process hung until killed. The
+// result and the coverage profile are written by m.Run.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	_ = windows.TerminateProcess(windows.CurrentProcess(), uint32(code))
+}
+
 // offScreenPos passes offScreen as the int a window position is.
 var offScreenPos = func() uintptr { n := int64(offScreen); return uintptr(n) }()
 

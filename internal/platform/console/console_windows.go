@@ -188,7 +188,7 @@ func pick(target window, consoles []found, probe Probe, selection bool) (found, 
 	}
 	var matching []found
 	for _, console := range consoles {
-		if console.title == target.title {
+		if sameTitle(console.title, target.title) {
 			matching = append(matching, console)
 		}
 	}
@@ -197,6 +197,17 @@ func pick(target window, consoles []found, probe Probe, selection bool) (found, 
 			ErrAmbiguous, len(consoles), err, len(matching))
 	}
 	return matching[0], nil
+}
+
+// sameTitle compares a console's title with its terminal window's. An elevated
+// console's title starts with a localized prefix ending in a colon, such as
+// "Administrator: ", which a terminal need not show.
+func sameTitle(console, window string) bool {
+	if console == window {
+		return true
+	}
+	prefix, ok := strings.CutSuffix(console, window)
+	return ok && window != "" && strings.HasSuffix(strings.TrimRight(prefix, " "), ":")
 }
 
 // byFocus picks the console of the terminal pane that has the focus in a

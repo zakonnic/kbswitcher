@@ -332,7 +332,7 @@ func title(t *testing.T, pid uint32, name string) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if consoles := discover(terminalWindow, []uint32{pid}); len(consoles) == 1 && consoles[0].title == name {
+		if consoles := discover(terminalWindow, []uint32{pid}); len(consoles) == 1 && sameTitle(consoles[0].title, name) {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -365,6 +365,25 @@ func TestSeveralConsolesAreToldApartByTheTitle(t *testing.T) {
 	target.pid = uint32(os.Getpid())
 	if _, err := pick(target, consoles, nil, false); err == nil {
 		t.Error("a Chromium window without a terminal in focus was picked")
+	}
+}
+
+func TestSameTitleAllowsTheElevationPrefix(t *testing.T) {
+	for _, tt := range []struct {
+		console, window string
+		want            bool
+	}{
+		{"one", "one", true},
+		{"Administrator:  one", "one", true}, // as an elevated cmd.exe on the CI runner
+		{"Администратор: one", "one", true},
+		{"Administrator:  one", "Administrator:  one", true},
+		{"none", "one", false},
+		{"Administrator: one", "", false},
+		{"two", "one", false},
+	} {
+		if got := sameTitle(tt.console, tt.window); got != tt.want {
+			t.Errorf("sameTitle(%q, %q) = %v", tt.console, tt.window, got)
+		}
 	}
 }
 
