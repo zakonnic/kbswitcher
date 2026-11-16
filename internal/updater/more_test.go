@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -123,6 +124,9 @@ func TestExtractRefusesDamagedArchives(t *testing.T) {
 }
 
 func TestInstallLeavesNoProgramWhereThereWasNone(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows moves the running program aside before installing")
+	}
 	u := testUpdater(t, "", filepath.Join(t.TempDir(), binaryName())) // nothing to move aside
 	if err := u.install([]byte("the new program")); err == nil {
 		t.Error("install put a program in place of one that is not there")

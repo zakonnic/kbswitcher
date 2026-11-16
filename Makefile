@@ -21,10 +21,14 @@ endif
 package = kbswitcher_$(1)_$(GOOS)_$(GOARCH).$(ARCHIVE)
 PACKAGE = $(call package,$(VERSION))
 
+# What a release publishes, one archive per platform; the build job of
+# .github/workflows/ci.yml lists the same.
+PLATFORMS := windows_amd64 darwin_amd64 darwin_arm64 linux_amd64 linux_arm64
+archives   = $(foreach p,$(PLATFORMS),kbswitcher_$(1)_$(p).$(if $(filter windows_%,$(p)),zip,tar.gz))
+
 # Release targets take V=X.Y.Z (the leading v is optional; VERSION= works too)
 # and tag vX.Y.Z.
 TAG     := v$(patsubst v%,%,$(or $(V),$(VERSION)))
-REPO    := $(patsubst github.com/%,%,$(MODULE))
 define need-version
 	@test -n "$(V)" || test "$(origin VERSION)" != file || { echo "V is required, e.g. make $@ V=1.2.3"; exit 1; }
 	@echo "$(TAG)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "V must look like 1.2.3, not $(or $(V),$(VERSION))"; exit 1; }
@@ -67,9 +71,11 @@ run: build ## Build and run
 test: ## Run the tests
 	go test ./...
 
+# Linking race builds in parallel can exhaust the commit limit of a busy
+# Windows machine; the linker then fails or hangs, not a test.
 .PHONY: test-race
 test-race: ## Run the tests under the race detector
-	go test -race ./...
+	go test -race -p 1 ./...
 
 .PHONY: cover
 cover: ## Run the tests and report coverage per package
@@ -107,13 +113,19 @@ check: fmt vet test ## Format, vet and test
 syso: ## Rebuild the Windows icon resource from internal/assets/icon.ico (needs windres)
 	echo '1 ICON "internal/assets/icon.ico"' | windres -O coff -F pe-x86-64 -o cmd/kbswitcher/rsrc_windows_amd64.syso
 
+# The icon is made with sips and iconutil, which every Mac has.
 .PHONY: bundle
 bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 	@test "$(GOOS)" = "darwin" || (echo "bundle is only meaningful on macOS"; exit 1)
-	@rm -rf $(APP)
-	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
+	@rm -rf $(APP) $(BINDIR)/kbswitcher.iconset
+	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources $(BINDIR)/kbswitcher.iconset
 	@cp $(BINDIR)/$(BINARY) $(APP)/Contents/MacOS/kbswitcher
-	@cp internal/assets/icon.png $(APP)/Contents/Resources/icon.png
+	@for s in 16 32 128 256; do \
+		sips -z $$s $$s internal/assets/icon.png --out $(BINDIR)/kbswitcher.iconset/icon_$${s}x$${s}.png >/dev/null && \
+		sips -z $$((s * 2)) $$((s * 2)) internal/assets/icon.png --out $(BINDIR)/kbswitcher.iconset/icon_$${s}x$${s}@2x.png >/dev/null || exit 1; \
+	done
+	@iconutil -c icns -o $(APP)/Contents/Resources/kbswitcher.icns $(BINDIR)/kbswitcher.iconset
+	@rm -rf $(BINDIR)/kbswitcher.iconset
 	@printf '%s\n' \
 		'<?xml version="1.0" encoding="UTF-8"?>' \
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
@@ -123,10 +135,11 @@ bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 		'	<key>CFBundleDisplayName</key><string>kbswitcher</string>' \
 		'	<key>CFBundleExecutable</key><string>kbswitcher</string>' \
 		'	<key>CFBundleIdentifier</key><string>$(APPID)</string>' \
+		'	<key>CFBundleIconFile</key><string>kbswitcher</string>' \
 		'	<key>CFBundlePackageType</key><string>APPL</string>' \
-		'	<key>CFBundleShortVersionString</key><string>$(VERSION)</string>' \
-		'	<key>CFBundleVersion</key><string>$(VERSION)</string>' \
-		'	<key>LSMinimumSystemVersion</key><string>11.0</string>' \
+		'	<key>CFBundleShortVersionString</key><string>$(patsubst v%,%,$(VERSION))</string>' \
+		'	<key>CFBundleVersion</key><string>$(patsubst v%,%,$(VERSION))</string>' \
+		'	<key>LSMinimumSystemVersion</key><string>12.0</string>' \
 		'	<key>LSUIElement</key><true/>' \
 		'	<key>NSHighResolutionCapable</key><true/>' \
 		'</dict>' \
@@ -134,17 +147,21 @@ bundle: build ## Build the macOS application bundle in bin/kbswitcher.app
 	@echo "built $(APP)"
 
 # A repeated dist replaces the archive's line in checksums.txt: the updater
-# trusts the first one.
+# trusts the first one. On macOS the archive holds the application bundle,
+# without the ._ files macOS's tar would add; the updater finds the program in
+# it by name.
 .PHONY: dist
-dist: build ## Package the build and record its checksum in checksums.txt, as a release expects
+dist: $(if $(filter darwin,$(GOOS)),bundle,build) ## Package the build and record its checksum in checksums.txt, as a release expects
+ifeq ($(GOOS),windows)
 	@mkdir -p $(BINDIR)/dist
 	@cp $(BINDIR)/$(BINARY) $(BINDIR)/dist/$(BINARY)
-ifeq ($(GOOS),windows)
 	cd $(BINDIR)/dist && "$(ZIPTAR)" -a -c -f ../$(PACKAGE) $(BINARY)
-else
-	cd $(BINDIR)/dist && tar -czf ../$(PACKAGE) $(BINARY)
-endif
 	@rm -rf $(BINDIR)/dist
+else ifeq ($(GOOS),darwin)
+	COPYFILE_DISABLE=1 tar -C $(BINDIR) -czf $(BINDIR)/$(PACKAGE) kbswitcher.app
+else
+	tar -C $(BINDIR) -czf $(BINDIR)/$(PACKAGE) $(BINARY)
+endif
 	cd $(BINDIR) && touch checksums.txt && \
 		{ awk -v f=$(PACKAGE) '{ n = $$2; sub(/^\*/, "", n) } n != f' checksums.txt; $(SHA256) $(PACKAGE); } > checksums.new && \
 		mv checksums.new checksums.txt
@@ -179,47 +196,32 @@ release-check: ## What a release must pass first: formatting, vet, lint and the 
 	@test -z "$$(gofmt -l .)" || { echo "Error: unformatted files:"; gofmt -l .; exit 1; }
 	"$(MAKE)" vet lint test-race
 
-# release undoes whatever stopped short of the push, so the version can be cut
-# again; once origin has the tag, a fix needs the next version. YES=1 skips
-# the question before the push.
+# The tag's push has CI build every platform and publish the release (the
+# release job of .github/workflows/ci.yml); release then waits for it and
+# checks what the updater will download. Whatever stops short of the push is
+# undone, so the version can be cut again; so can a tag CI did not publish,
+# once it is deleted from origin as tools/release says. YES=1 skips the
+# question before the push.
 .PHONY: release
-release: ## Release in one go: check, tag, package, confirm, push; undone if it stops before the push (make release V=1.2.3 [YES=1])
+release: ## Release in one go: check, tag, confirm, push, wait for CI to publish every platform, verify (make release V=1.2.3 [YES=1])
 	$(need-version)
 	$(need-clean-main)
 	"$(MAKE)" release-check
 	"$(MAKE)" tag V=$(TAG)
-	@rm -f $(BINDIR)/checksums.txt
-	@"$(MAKE)" dist VERSION=$(TAG) || { echo "Packaging failed: deleting the tag."; "$(MAKE)" untag V=$(TAG) >/dev/null; exit 1; }
 	@if [ "$(YES)" != 1 ]; then \
 		printf 'Push %s as %s to origin? [y/N] ' "$$(git log -1 --format='%h %s')" "$(TAG)"; \
 		read answer || answer=; \
 		case "$$answer" in y|Y|yes) ;; *) echo "Not pushed: deleting the tag."; "$(MAKE)" untag V=$(TAG) >/dev/null; exit 1;; esac; \
 	fi
 	@"$(MAKE)" push V=$(TAG) || { echo "The push failed and, being atomic, sent nothing: deleting the tag."; "$(MAKE)" untag V=$(TAG) >/dev/null; exit 1; }
-	@echo
-	@echo "$(TAG) is pushed. Publish it on GitHub:"
-	@echo "  1. Open https://$(MODULE)/releases/new?tag=$(TAG)"
-	@echo "  2. Title: $(TAG). Attach $(BINDIR)/$(call package,$(TAG)) and $(BINDIR)/checksums.txt"
-	@echo "  3. Leave 'Set as a pre-release' off and press 'Publish release':"
-	@echo "     the updater sees neither drafts nor pre-releases."
-	@echo "  4. Then: make release-verify V=$(patsubst v%,%,$(TAG))"
+	go run ./tools/release wait $(TAG) $(call archives,$(TAG))
 
-# The updater installs the latest release only: its archive for this machine
-# and checksums.txt, which must vouch for that archive.
+# The updater installs the latest release only: its archive for the machine and
+# checksums.txt, which must vouch for that archive.
 .PHONY: release-verify
-release-verify: ## After publishing: check GitHub serves vV as the latest release, with the files the updater needs (make release-verify V=1.2.3)
+release-verify: ## Check GitHub serves vV as the latest release, every platform's archive vouched for by checksums.txt (make release-verify V=1.2.3)
 	$(need-version)
-	@json=$$(curl -fsS https://api.github.com/repos/$(REPO)/releases/latest) || { \
-		echo "Error: GitHub has no published release yet (drafts and pre-releases do not count)."; exit 1; }; \
-	echo "$$json" | grep -q '"tag_name": *"$(TAG)"' || { \
-		echo "Error: the latest release is $$(echo "$$json" | grep -o '"tag_name": *"[^"]*"'), not $(TAG)."; exit 1; }; \
-	for f in $(call package,$(TAG)) checksums.txt; do \
-		echo "$$json" | grep -q "\"name\": *\"$$f\"" || { echo "Error: $(TAG) has no $$f attached."; exit 1; }; \
-	done; \
-	sums=$$(curl -fsSL https://github.com/$(REPO)/releases/download/$(TAG)/checksums.txt) || { echo "Error: cannot download checksums.txt."; exit 1; }; \
-	echo "$$sums" | grep -q "$$($(SHA256) $(BINDIR)/$(call package,$(TAG)) | cut -d' ' -f1)" || { \
-		echo "Error: the published checksums.txt does not vouch for $(BINDIR)/$(call package,$(TAG))."; exit 1; }; \
-	echo "$(TAG) is the latest release, and its checksums.txt vouches for the archive built here."
+	go run ./tools/release verify $(TAG) $(call archives,$(TAG))
 
 .PHONY: clean
 clean: ## Remove the build output

@@ -35,6 +35,13 @@ func TestCompareVersions(t *testing.T) {
 		{"v1.0.0-rc1", "v1.0.0-rc2", -1},
 		{"dev", "v0.0.1", -1},
 		{"dev", "dev", 0},
+		// Local builds: git describe without a tag, after a tag, modified.
+		{"6443788", "v0.0.1", -1},
+		{"v1.0.0-3-g6443788", "v1.0.0", 1},
+		{"v1.0.0-3-g6443788", "v1.0.1", -1},
+		{"v1.0.0-3-g6443788-dirty", "v1.0.0-12-gabcdef0", -1},
+		{"v1.0.0-dirty", "v1.0.0", 1},
+		{"v1.0.0-rc1", "v1.0.0-3-g6443788", -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.a+" vs "+tt.b, func(t *testing.T) {
@@ -143,6 +150,17 @@ func TestExtractBinary(t *testing.T) {
 		// An entry that tries to escape is matched on its base name only, and
 		// what is extracted is written to a destination this package chooses.
 		got, err := extractBinary(tarGzArchive(t, "../../"+binaryName(), content), "release.tar.gz")
+		if err != nil || string(got) != content {
+			t.Errorf("extractBinary = %q, %v; want %q", got, err, content)
+		}
+	})
+	t.Run("macOS application bundle", func(t *testing.T) {
+		archive := tarGzFiles(t,
+			[2]string{"kbswitcher.app/", ""},
+			[2]string{"kbswitcher.app/Contents/Info.plist", "<plist/>"},
+			[2]string{"kbswitcher.app/Contents/Resources/kbswitcher.icns", "icon"},
+			[2]string{"kbswitcher.app/Contents/MacOS/" + binaryName(), content})
+		got, err := extractBinary(archive, "release.tar.gz")
 		if err != nil || string(got) != content {
 			t.Errorf("extractBinary = %q, %v; want %q", got, err, content)
 		}
@@ -339,17 +357,29 @@ func releaseServer(t *testing.T, version string, archive []byte, digest string) 
 
 func tarGzArchive(t *testing.T, name, content string) []byte {
 	t.Helper()
+	return tarGzFiles(t, [2]string{name, content})
+}
+
+// tarGzFiles packs {name, content} pairs; a name ending in / is a directory.
+func tarGzFiles(t *testing.T, files ...[2]string) []byte {
+	t.Helper()
 
 	var buffer bytes.Buffer
 	compressor := gzip.NewWriter(&buffer)
 	archive := tar.NewWriter(compressor)
 
-	header := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}
-	if err := archive.WriteHeader(header); err != nil {
-		t.Fatalf("WriteHeader: %v", err)
-	}
-	if _, err := archive.Write([]byte(content)); err != nil {
-		t.Fatalf("Write: %v", err)
+	for _, file := range files {
+		name, content := file[0], file[1]
+		header := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(content)), Typeflag: tar.TypeReg}
+		if strings.HasSuffix(name, "/") {
+			header.Typeflag = tar.TypeDir
+		}
+		if err := archive.WriteHeader(header); err != nil {
+			t.Fatalf("WriteHeader: %v", err)
+		}
+		if _, err := archive.Write([]byte(content)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
 	}
 	if err := archive.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

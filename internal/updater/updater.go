@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -471,8 +472,10 @@ func readCapped(reader io.Reader, name string) ([]byte, error) {
 
 // compareVersions orders two tags such as "v1.2.0": negative when a is older
 // than b, zero when equal, positive when newer. Fields are compared as
-// numbers; a pre-release suffix ("-rc1") sorts before the bare tag. Anything
-// unparsable, "dev" included, is the oldest possible version.
+// numbers; a pre-release suffix ("-rc1") sorts before the bare tag, and a git
+// describe of a later commit ("-3-gabc1234", "-dirty") after it. Anything
+// unparsable, "dev" and a bare commit hash included, is the oldest possible
+// version.
 func compareVersions(a, b string) int {
 	aFields, aSuffix := splitVersion(a)
 	bFields, bSuffix := splitVersion(b)
@@ -490,20 +493,40 @@ func compareVersions(a, b string) int {
 		}
 	}
 
+	aRank, aCommits := suffixRank(aSuffix)
+	bRank, bCommits := suffixRank(bSuffix)
 	switch {
-	case aSuffix == bSuffix:
-		return 0
-	case aSuffix == "":
-		return 1
-	case bSuffix == "":
-		return -1
+	case aRank != bRank:
+		return aRank - bRank
+	case aRank > 0:
+		return aCommits - bCommits
 	default:
 		return strings.Compare(aSuffix, bSuffix)
 	}
 }
 
+// describeSuffix is what git describe appends to a tag for a later commit.
+var describeSuffix = regexp.MustCompile(`^-(\d+)-g[0-9a-f]+(-dirty)?$`)
+
+// suffixRank places a suffix before (-1), at (0) or after (1) the bare tag;
+// after it, commits counts the commits since the tag.
+func suffixRank(suffix string) (rank, commits int) {
+	switch suffix {
+	case "":
+		return 0, 0
+	case "-dirty":
+		return 1, 0
+	}
+	if m := describeSuffix.FindStringSubmatch(suffix); m != nil {
+		commits, _ = strconv.Atoi(m[1])
+		return 1, commits
+	}
+	return -1, 0
+}
+
 // splitVersion breaks "v1.2.3-rc1" into its numbers and its suffix. An
-// unparsable version yields no numbers.
+// unparsable version, or one with a single number such as a commit hash of
+// digits only, yields no numbers.
 func splitVersion(version string) ([]int, string) {
 	version = strings.TrimPrefix(strings.TrimSpace(version), "v")
 
@@ -512,8 +535,12 @@ func splitVersion(version string) ([]int, string) {
 		version, suffix = version[:cut], version[cut:]
 	}
 
+	fields := strings.Split(version, ".")
+	if len(fields) < 2 {
+		return nil, suffix
+	}
 	var numbers []int
-	for _, field := range strings.Split(version, ".") {
+	for _, field := range fields {
 		number, err := strconv.Atoi(field)
 		if err != nil {
 			return nil, suffix

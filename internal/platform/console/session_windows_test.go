@@ -72,7 +72,10 @@ func newShell(t *testing.T) uint32 {
 		t.Fatalf("CreateProcess: %v", err)
 	}
 	t.Cleanup(func() {
+		// Termination is asynchronous: a shell still alive would be a second
+		// console for the next test's Open.
 		_ = windows.TerminateProcess(pi.Process, 0)
+		_, _ = windows.WaitForSingleObject(pi.Process, 5000)
 		_ = windows.CloseHandle(pi.Process)
 		_ = windows.CloseHandle(pi.Thread)
 		windows.ClosePseudoConsole(pc)

@@ -1,4 +1,5 @@
 #include <X11/XKBlib.h>
+#include <X11/Xutil.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include <stdio.h>

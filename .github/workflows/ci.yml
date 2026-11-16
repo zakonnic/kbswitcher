@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    # Release tags only, as make tag makes them: any tag that runs here is
+    # published as the latest release.
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
   pull_request:
   workflow_dispatch:
 
@@ -17,7 +19,7 @@ concurrency:
 jobs:
   # Most of the code that talks to the system (text fields, consoles, hotkeys,
   # the clipboard) is built for Windows only, so the tests and the coverage run
-  # there; the GUI toolkit needs cgo, and the runner's MinGW gcc provides it.
+  # there; the GUI toolkit needs cgo, and the runner's gcc provides it.
   # The README badge: shields.io renders coverage.json from the badges branch, a
   # single commit this job replaces on every push to main; a pull request only
   # gets the number in its job summary.
@@ -63,3 +65,83 @@ jobs:
           git -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -qm "coverage $PCT%"
           git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
+
+  # Every platform's archive, built where its toolkit is: cgo cannot cross to
+  # macOS from elsewhere. The macOS runner is Apple silicon; go passes clang
+  # -arch for the Intel archive. Linux is built on the oldest supported Ubuntu,
+  # so the archive starts on distributions with an older C library. The list
+  # matches PLATFORMS in the Makefile.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, goos: windows, goarch: amd64}
+          - {os: macos-latest, goos: darwin, goarch: arm64}
+          - {os: macos-latest, goos: darwin, goarch: amd64, cross: true}
+          - {os: ubuntu-22.04, goos: linux, goarch: amd64}
+          - {os: ubuntu-22.04-arm, goos: linux, goarch: arm64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: '1'
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+      - name: toolkit libraries
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libx11-dev libxtst-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev xorg-dev
+      - name: make
+        if: matrix.goos == 'windows'
+        run: choco install make -y --no-progress
+      - name: go vet
+        if: ${{ !matrix.cross }}
+        run: go vet ./...
+      - run: make dist VERSION="$VERSION"
+      - name: newest C library the Linux build needs
+        if: matrix.goos == 'linux'
+        run: |
+          echo "glibc: $(objdump -T bin/kbswitcher | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            bin/kbswitcher_*
+            bin/checksums.txt
+          retention-days: 14
+          if-no-files-found: error
+
+  # A tag publishes the release once the tests and every build have passed:
+  # the archives and one checksums.txt for all of them, which the updater
+  # requires. It is published, not a draft, so the updater sees it at once.
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: artifacts
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat artifacts/*/checksums.txt > checksums.txt
+          cat checksums.txt
+          gh release create "$TAG" artifacts/*/kbswitcher_* checksums.txt \
+            --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes --verify-tag

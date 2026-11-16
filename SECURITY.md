@@ -231,7 +231,9 @@ confirmed the update. No installer, no shell, no elevation.
 
 **Trust model.** Integrity rests on TLS to the release host plus the checksum
 published alongside the release. Whoever can publish a release can publish a
-binary. A deployment that needs a stronger guarantee should distribute
+binary. Releases are built from the tagged commit and published by the
+repository's GitHub Actions workflow (`.github/workflows/ci.yml`, job
+`release`), so pushing a `v*` tag is enough to publish one. A deployment that needs a stronger guarantee should distribute
 kbswitcher through its own device management and leave the update button unused;
 on macOS it should in any case, because replacing the executable inside a signed
 application bundle invalidates its signature (the confirmation dialog says so).

@@ -31,10 +31,21 @@ pressed; no other keystroke ever reaches the process, and nothing is buffered. S
 
 ## Installation
 
-Download the archive for your platform from the [releases](https://github.com/zakonnic/kbswitcher/releases) page,
-unpack it anywhere and start `kbswitcher`. Settings → *Start when I log in* adds it to autostart; About →
-*Check for updates* installs a newer release in place. Only one copy runs at a time: starting kbswitcher while it is
-already running exits quietly, so an autostart entry and a manual launch never fight over the hotkeys.
+Download the archive for your machine from the [latest release](https://github.com/zakonnic/kbswitcher/releases/latest):
+
+| System                 | Archive                                  | Contains          |
+|------------------------|------------------------------------------|-------------------|
+| Windows (x64 and ARM)  | `kbswitcher_vX.Y.Z_windows_amd64.zip`    | `kbswitcher.exe`  |
+| macOS, Apple silicon   | `kbswitcher_vX.Y.Z_darwin_arm64.tar.gz`  | `kbswitcher.app`  |
+| macOS, Intel           | `kbswitcher_vX.Y.Z_darwin_amd64.tar.gz`  | `kbswitcher.app`  |
+| Linux, x86-64          | `kbswitcher_vX.Y.Z_linux_amd64.tar.gz`   | `kbswitcher`      |
+| Linux, ARM64           | `kbswitcher_vX.Y.Z_linux_arm64.tar.gz`   | `kbswitcher`      |
+
+Unpack it into a folder you own and start the program; the steps for each system follow. kbswitcher lives in the
+tray (the menu bar on a Mac). Settings → *Start when I log in* adds it to autostart; About → *Check for updates*
+installs a newer release in place, which is why the folder must be writable without administrator rights. Only one
+copy runs at a time: starting kbswitcher while it is already running exits quietly, so an autostart entry and a
+manual launch never fight over the hotkeys.
 
 Or build it yourself (Go 1.26+, cgo):
 
@@ -45,27 +56,48 @@ make bundle         # macOS: wraps the binary in bin/kbswitcher.app
 # make help         # list all targets
 ```
 
-| Platform | Build needs                                                                    |
-|----------|--------------------------------------------------------------------------------|
-| Windows  | a C compiler (MinGW-w64 or the MSVC build tools), for the GUI toolkit          |
-| macOS    | Xcode command line tools                                                       |
-| Linux    | `libx11-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libgl1-mesa-dev`, `xorg-dev` |
+| Platform | Build needs                                                                                       |
+|----------|---------------------------------------------------------------------------------------------------|
+| Windows  | a C compiler (MinGW-w64 or the MSVC build tools), for the GUI toolkit                             |
+| macOS    | Xcode command line tools                                                                          |
+| Linux    | `gcc`, `libx11-dev`, `libxtst-dev`, `libxkbcommon-dev`, `libwayland-dev`, `libgl1-mesa-dev`, `xorg-dev` |
 
 ### Windows
 
-Nothing to grant: a hotkey, key presses and the clipboard need no permission. SmartScreen may warn about an unsigned
-download on the first start.
+1. Unpack the zip into a folder of your own, for example `%LOCALAPPDATA%\Programs\kbswitcher` (not
+   `Program Files`: the update button replaces the program in place).
+2. Start `kbswitcher.exe`. The program is not signed, so SmartScreen may say *Windows protected your PC* on the first
+   start: *More info → Run anyway*.
+
+Nothing to grant: a hotkey, key presses and the clipboard need no permission. Windows on ARM runs the x64 build.
 
 ### macOS
 
-kbswitcher replaces text by pressing keys on your behalf, which macOS guards with the **Accessibility** permission.
-The first start asks for it; grant it in *System Settings → Privacy & Security → Accessibility*, then restart the
-app. Until then the hotkeys do nothing.
+macOS 12 or later.
+
+1. Open the archive (Finder unpacks it) and move `kbswitcher.app` to *Applications*.
+2. Start it. The app is not signed by an Apple developer, so macOS refuses the first start; open
+   *System Settings → Privacy & Security*, press *Open Anyway* next to the message about kbswitcher, and confirm.
+   The same from a terminal: `xattr -dr com.apple.quarantine /Applications/kbswitcher.app`.
+3. Grant **Accessibility**: kbswitcher replaces text by pressing keys on your behalf, which macOS guards with that
+   permission. The first start asks for it; switch kbswitcher on in *System Settings → Privacy & Security →
+   Accessibility*, then restart the app. Until then the hotkeys do nothing.
 
 On a MacBook, `F12` only reaches applications when *Use F1, F2, etc. keys as standard function keys* is on, or when
 `fn` is held. If that does not suit you, pick another key in Settings.
 
 ### Linux
+
+```sh
+mkdir -p ~/.local/bin
+tar -xzf kbswitcher_vX.Y.Z_linux_amd64.tar.gz -C ~/.local/bin
+~/.local/bin/kbswitcher &
+```
+
+A desktop installation already has the libraries it loads: X11 (`libX11`, `libXtst`), `libxkbcommon`,
+`libwayland-client` and OpenGL. On a minimal Debian or Ubuntu:
+`sudo apt install libx11-6 libxtst6 libxkbcommon0 libwayland-client0 libgl1`. The archives are built on Ubuntu 22.04
+and need its C library (glibc 2.35) or a newer one; on an older distribution, build from source.
 
 kbswitcher needs an X11 session. Under Wayland it works only for applications running through XWayland, because
 Wayland deliberately offers no way to grab a global hotkey or to type into another application's window.
@@ -226,21 +258,22 @@ checks what the window shows. `go run ./tools/stand -help` lists its options.
 
 ```sh
 make release V=1.2.3          # asks before the push; YES=1 does not
-make release-verify V=1.2.3   # after publishing on GitHub
 ```
 
 On a clean `main`, `make release` checks formatting, vets, lints and runs the tests under the race detector, tags
-`v1.2.3` (refusing a version not newer than the last tag), packages the archive with `checksums.txt`, asks, and
-pushes `main` and the tag together. Anything that stops before the push deletes the tag again, so the same version
-can be cut once the cause is fixed; once origin has the tag, a fix needs the next version. It then prints what is left
-on GitHub: publish a release from the tag with both files attached. The updater reads only the latest published
-release; drafts and pre-releases are invisible to it, and it refuses a release without `checksums.txt`.
-`make release-verify` checks that GitHub serves the new release as the latest, with the archive and a `checksums.txt`
-that vouches for the archive built here.
+`v1.2.3` (refusing a version not newer than the last tag), asks, and pushes `main` and the tag together. The tag's
+CI run then builds every platform on its own runner (the build needs cgo, which cannot cross to macOS) and, once the
+tests and all five builds pass, publishes the release with the archives and one `checksums.txt`. `make release` waits
+for that run (about a quarter of an hour) and finishes by checking the release as the updater will use it: it is the
+latest published one, every archive is attached, and each downloads with the checksum listed for it.
 
-The build needs cgo, so each platform's archive is made on that platform with `make dist VERSION=v1.2.3` and added to
-the same release, its line appended to the same `checksums.txt`. `make release-check`, `make tag`, `make untag` and
-`make push` are the steps on their own.
+Anything that stops before the push deletes the tag again. When CI fails, nothing is published and the updater sees
+nothing, and `make release` prints the way back. A cause that needs no new commit (a flaky test, a runner outage):
+re-run the failed jobs on the run's page, then `make release-verify V=1.2.3`. A fix: commit it, delete the tag from
+origin and locally (`git push origin :refs/tags/v1.2.3`, `make untag V=1.2.3`) and run `make release` again; should a
+draft of the release be left over from a broken upload, delete it on GitHub first. `make release-verify V=1.2.3`
+repeats the final check; `GITHUB_TOKEN` lifts the GitHub API's limit of 60 requests an hour. `make dist` packages the current platform alone, as CI does on
+each runner; `make release-check`, `make tag`, `make untag` and `make push` are the other steps on their own.
 
 ## Security
 
